@@ -3,7 +3,11 @@ Semantic matching service for JD-Resume matching.
 
 Uses sentence-transformers with bge-large-en-v1.5 for embeddings
 and cosine similarity for matching.
+
+Optionally runs an LLM qualitative sidecar (hybrid mode) controlled
+by the ``matching`` section in ``config/models.yaml``.
 """
+import json
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
@@ -44,8 +48,8 @@ class SemanticMatcher:
             device: Device to run the model on (cuda/cpu)
         """
         # Load config if not provided
+        config = load_model_config()
         if model_name is None or device is None:
-            config = load_model_config()
             embeddings_config = config.get("providers", {}).get("embeddings", {})
             model_name = model_name or embeddings_config.get("model", "BAAI/bge-large-en-v1.5")
             config_device = embeddings_config.get("device", "auto")
@@ -61,11 +65,25 @@ class SemanticMatcher:
         self.model_name = model_name
         self.device = device
         
-        # Weights for different matching components
-        self.weights = {
-            "semantic": 0.35,      # Overall semantic similarity
-            "skills": 0.40,        # Skill match
-            "experience": 0.25,    # Experience match
+        # LLM matching sidecar config
+        matching_config = config.get("providers", {}).get("matching", {})
+        self.llm_enabled: bool = matching_config.get("enabled", False)
+        self.matching_provider: str = matching_config.get("provider", "ollama")
+        self.matching_model: str = matching_config.get("model", "qwen2.5:3b")
+        self.matching_max_tokens: int = matching_config.get("max_tokens", 1024)
+        self.matching_temperature: float = matching_config.get("temperature", 0.1)
+        
+        # Weight presets
+        self.weights_core = {
+            "semantic": 0.35,
+            "skills": 0.40,
+            "experience": 0.25,
+        }
+        self.weights_hybrid = {
+            "semantic": 0.25,
+            "skills": 0.30,
+            "experience": 0.20,
+            "llm_fit": 0.25,
         }
     
     def encode(self, texts: List[str], normalize: bool = True) -> np.ndarray:
@@ -273,6 +291,148 @@ class SemanticMatcher:
         
         return float(experience_score)
     
+    async def compute_llm_fit_assessment(
+        self,
+        resume: ParsedResume,
+        job_description: ParsedJobDescription,
+        semantic_score: float,
+        skill_score: float,
+        experience_score: float,
+        matched_skills: List[str],
+        missing_skills: List[str],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Run the LLM qualitative sidecar to assess candidate-JD fit.
+
+        Returns a dict with fit_score, reasoning, transferable_skills,
+        experience_quality, risk_flags, and strengths — or None on failure.
+        """
+        try:
+            from src.providers.llm import LLMProviderFactory
+            from src.providers.llm.base import GenerationConfig, user_message, system_message
+            from src.services.prompts import LLM_MATCH_ASSESSMENT_PROMPT
+
+            # Build the LLM provider for the matching config
+            llm = LLMProviderFactory.create(
+                provider_type=self.matching_provider,
+                model=self.matching_model,
+            )
+
+            # ----- Format resume sections into readable strings -----
+            experience_lines = []
+            for exp in resume.experience:
+                parts = []
+                if exp.title:
+                    parts.append(exp.title)
+                if exp.company:
+                    parts.append(f"@ {exp.company}")
+                dates = ""
+                if exp.start_date:
+                    dates = exp.start_date
+                if exp.end_date:
+                    dates += f" - {exp.end_date}"
+                if dates:
+                    parts.append(f"({dates})")
+                header = " ".join(parts)
+                bullets = "; ".join(exp.highlights[:4]) if exp.highlights else (exp.description or "")
+                experience_lines.append(f"- {header}: {bullets}" if bullets else f"- {header}")
+
+            project_lines = []
+            for proj in resume.projects:
+                name = proj.name or "Unnamed project"
+                desc = proj.description or ""
+                tech = ", ".join(proj.tech_stack) if proj.tech_stack else ""
+                line = f"- {name}: {desc}"
+                if tech:
+                    line += f" [{tech}]"
+                project_lines.append(line)
+
+            research_lines = []
+            for res in resume.research:
+                title = res.title or "Untitled"
+                venue = f" ({res.venue})" if res.venue else ""
+                highlights = "; ".join(res.highlights[:2]) if res.highlights else ""
+                line = f"- {title}{venue}"
+                if highlights:
+                    line += f": {highlights}"
+                research_lines.append(line)
+
+            responsibilities_lines = [f"- {r}" for r in job_description.responsibilities[:8]]
+            qualifications_lines = [f"- {q}" for q in job_description.qualifications[:8]]
+
+            prompt = LLM_MATCH_ASSESSMENT_PROMPT.format(
+                semantic_score=f"{semantic_score:.1f}",
+                skill_score=f"{skill_score:.1f}",
+                experience_score=f"{experience_score:.1f}",
+                matched_skills=", ".join(matched_skills) if matched_skills else "none",
+                missing_skills=", ".join(missing_skills) if missing_skills else "none",
+                resume_skills=", ".join(resume.skills) if resume.skills else "none listed",
+                resume_experience="\n".join(experience_lines) if experience_lines else "No experience listed",
+                resume_projects="\n".join(project_lines) if project_lines else "No projects listed",
+                resume_research="\n".join(research_lines) if research_lines else "No research listed",
+                resume_interests=", ".join(resume.areas_of_interest) if resume.areas_of_interest else "none listed",
+                jd_title=job_description.title or "Unknown",
+                jd_required_skills=", ".join(job_description.required_skills) if job_description.required_skills else "none listed",
+                jd_preferred_skills=", ".join(job_description.preferred_skills) if job_description.preferred_skills else "none listed",
+                jd_responsibilities="\n".join(responsibilities_lines) if responsibilities_lines else "Not specified",
+                jd_qualifications="\n".join(qualifications_lines) if qualifications_lines else "Not specified",
+            )
+
+            messages = [
+                system_message(
+                    "You are a hiring assessment engine. Return ONLY valid JSON. "
+                    "No markdown fences, no commentary."
+                ),
+                user_message(prompt),
+            ]
+
+            logger.info("Running LLM fit assessment...")
+            response = await llm.generate(
+                messages,
+                GenerationConfig(
+                    max_tokens=self.matching_max_tokens,
+                    temperature=self.matching_temperature,
+                ),
+            )
+
+            # Parse JSON from response
+            raw = response.content.strip()
+            # Strip markdown fences if present
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+                if raw.endswith("```"):
+                    raw = raw[:-3]
+                raw = raw.strip()
+
+            data = json.loads(raw)
+
+            # Validate and clamp fit_score
+            fit_score = data.get("fit_score")
+            if fit_score is None:
+                logger.warning("LLM response missing fit_score, discarding result")
+                return None
+            fit_score = max(0, min(100, int(fit_score)))
+
+            result = {
+                "fit_score": float(fit_score),
+                "reasoning": data.get("reasoning", ""),
+                "transferable_skills": data.get("transferable_skills", []),
+                "experience_quality": data.get("experience_quality"),
+                "experience_quality_reasoning": data.get("experience_quality_reasoning"),
+                "risk_flags": data.get("risk_flags", []),
+                "strengths": data.get("strengths", []),
+            }
+
+            logger.info(f"LLM fit assessment complete: fit_score={fit_score}")
+            return result
+
+        except json.JSONDecodeError as e:
+            logger.warning(f"LLM returned invalid JSON for fit assessment: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"LLM fit assessment failed (falling back to core-only): {e}")
+            return None
+
     def generate_recommendations(
         self,
         resume: ParsedResume,
@@ -329,6 +489,7 @@ class SemanticMatcher:
         job_description: ParsedJobDescription,
         resume_id: str,
         job_description_id: str,
+        use_llm: bool = True,
     ) -> MatchResult:
         """
         Perform full matching between a resume and job description.
@@ -338,23 +499,49 @@ class SemanticMatcher:
             job_description: Parsed job description data
             resume_id: ID of the resume document
             job_description_id: ID of the job description document
+            use_llm: Whether to run the LLM sidecar (requires config enabled too)
             
         Returns:
             Complete match result with scores and recommendations
         """
         logger.info(f"Matching resume {resume_id} against JD {job_description_id}")
         
-        # Compute individual scores
+        # Compute core algorithmic scores
         semantic_score = self.compute_semantic_similarity(resume, job_description)
         skill_score, matched_skills, missing_skills = self.compute_skill_match(resume, job_description)
         experience_score = self.compute_experience_match(resume, job_description)
         
-        # Compute weighted overall score
-        overall_score = (
-            semantic_score * self.weights["semantic"] +
-            skill_score * self.weights["skills"] +
-            experience_score * self.weights["experience"]
-        )
+        # ----- LLM sidecar (optional) -----
+        llm_result: Optional[Dict[str, Any]] = None
+        run_llm = use_llm and self.llm_enabled
+
+        if run_llm:
+            llm_result = await self.compute_llm_fit_assessment(
+                resume=resume,
+                job_description=job_description,
+                semantic_score=semantic_score,
+                skill_score=skill_score,
+                experience_score=experience_score,
+                matched_skills=matched_skills,
+                missing_skills=missing_skills,
+            )
+
+        # ----- Weighted overall score -----
+        if llm_result is not None:
+            weights = self.weights_hybrid
+            overall_score = (
+                semantic_score * weights["semantic"]
+                + skill_score * weights["skills"]
+                + experience_score * weights["experience"]
+                + llm_result["fit_score"] * weights["llm_fit"]
+            )
+        else:
+            weights = self.weights_core
+            overall_score = (
+                semantic_score * weights["semantic"]
+                + skill_score * weights["skills"]
+                + experience_score * weights["experience"]
+            )
         
         # Generate recommendations
         recommendations = self.generate_recommendations(
@@ -364,7 +551,8 @@ class SemanticMatcher:
         logger.info(
             f"Match complete: overall={overall_score:.1f}, "
             f"semantic={semantic_score:.1f}, skills={skill_score:.1f}, "
-            f"experience={experience_score:.1f}"
+            f"experience={experience_score:.1f}, "
+            f"llm={'on (score=' + str(llm_result['fit_score']) + ')' if llm_result else 'off'}"
         )
         
         return MatchResult(
@@ -377,6 +565,15 @@ class SemanticMatcher:
             matched_skills=matched_skills,
             missing_skills=missing_skills,
             recommendations=recommendations,
+            # LLM sidecar fields
+            llm_fit_score=llm_result["fit_score"] if llm_result else None,
+            llm_reasoning=llm_result["reasoning"] if llm_result else None,
+            transferable_skills=llm_result.get("transferable_skills", []) if llm_result else [],
+            experience_quality=llm_result.get("experience_quality") if llm_result else None,
+            experience_quality_reasoning=llm_result.get("experience_quality_reasoning") if llm_result else None,
+            risk_flags=llm_result.get("risk_flags", []) if llm_result else [],
+            strengths=llm_result.get("strengths", []) if llm_result else [],
+            llm_enabled=llm_result is not None,
         )
     
     async def compute_embedding(self, text: str) -> List[float]:

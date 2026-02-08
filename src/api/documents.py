@@ -402,12 +402,19 @@ async def list_job_descriptions(
 async def match_resume_to_job(
     resume_id: str,
     job_description_id: str,
+    use_llm: bool = True,
     user: AuthenticatedUser = Depends(require_permission(Permissions.RUN_ANALYSIS)),
 ):
     """
     Match a resume against a job description.
     
     Returns match scores and analysis.
+    
+    Args:
+        resume_id: ID of the uploaded resume
+        job_description_id: ID of the job description
+        use_llm: Enable LLM qualitative sidecar (default True).
+                 Set to False for pure algorithmic matching.
     """
     # Validate resume exists
     try:
@@ -456,6 +463,7 @@ async def match_resume_to_job(
         job_description=parsed_jd,
         resume_id=resume_id,
         job_description_id=job_description_id,
+        use_llm=use_llm,
     )
     
     return result

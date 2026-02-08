@@ -202,3 +202,12 @@ class MatchResult(BaseModel):
     matched_skills: List[str] = Field(default_factory=list)
     missing_skills: List[str] = Field(default_factory=list)
     recommendations: List[str] = Field(default_factory=list)
+    # LLM sidecar fields (populated only when hybrid matching is enabled)
+    llm_fit_score: Optional[float] = None
+    llm_reasoning: Optional[str] = None
+    transferable_skills: List[Dict[str, str]] = Field(default_factory=list)
+    experience_quality: Optional[str] = None
+    experience_quality_reasoning: Optional[str] = None
+    risk_flags: List[str] = Field(default_factory=list)
+    strengths: List[str] = Field(default_factory=list)
+    llm_enabled: bool = False
