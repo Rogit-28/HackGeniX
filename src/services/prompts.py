@@ -544,96 +544,77 @@ Output format (JSON):
 # LLM-Based Document Extraction Prompts
 # ============================================================================
 
-RESUME_EXTRACTION_PROMPT = """You are a JSON formatter. Your ONLY job is to map the raw resume text below into structured key-value pairs. You must copy every word VERBATIM from the resume — do NOT summarize, rephrase, shorten, paraphrase, or omit any text.
+RESUME_EXTRACTION_PROMPT = """Extract structured information from this resume text.
 
-**Raw Resume Text:**
+**Resume Text:**
 {resume_text}
 
-**Your task:**
-Read every line of the text above. For each piece of information, decide which JSON key it belongs to and copy it there word-for-word. Generate key-value pairs that capture EVERYTHING in the resume.
+**Instructions:**
+Parse the resume and extract all information into the JSON structure below.
+Be thorough - extract ALL experience entries, ALL skills, ALL education.
+The candidate's name is typically at the very top of the resume.
 
-**RULES (read before you start):**
-1. COPY VERBATIM — every bullet point, description, highlight must be copied exactly as written. Preserve every number, metric, percentage, and technical term.
-2. SKILLS — scan the ENTIRE resume and collect every technology, tool, language, framework, library, platform, database, cloud service, API, and methodology mentioned anywhere: skills sections, project parentheticals, experience bullets, research descriptions. Flatten all sub-categories into one flat list.
-3. PER-ENTRY SKILLS — for each experience, project, and research entry, also list the specific skills/technologies mentioned in THAT entry's text.
-4. IMPACT — for each experience, project, and research entry, extract every quantified metric, number, or measurable outcome (e.g. "700+ partners", "94% accuracy", "16-18 hours saved", "SSIM of 0.742").
-5. PROJECTS — technologies listed in parentheses next to a project name are the tech_stack. Skills includes tech_stack PLUS any additional technologies mentioned in the bullet points (e.g. if "Streamlit" appears in a bullet but not the parenthetical, it goes in skills but not tech_stack).
-6. DYNAMIC SECTIONS — if the resume has sections not covered by the schema below (e.g. Awards, Volunteer Work, Publications, Hobbies, Languages), add them under "extra_sections" as key-value pairs.
-7. Use null for missing/uncertain fields, never empty strings.
-8. The candidate's name is the largest text at the very top. Do NOT confuse it with university, company, or location names.
-9. Preserve original date formats from the resume.
-10. If GPA is a percentage, convert to 4.0 scale (divide by 25).
-
-**Output JSON structure:**
+**Output JSON format:**
 {{
     "contact": {{
-        "name": "Full name from top of resume",
-        "email": "email or null",
-        "phone": "phone exactly as shown or null",
-        "linkedin": "LinkedIn URL/username or null",
-        "github": "GitHub URL/username or null",
-        "location": "location or null"
+        "full_name": "Candidate's full name (First Last)",
+        "email": "email@example.com or null",
+        "phone": "phone number as shown or null",
+        "linkedin": "LinkedIn URL or username or null",
+        "github": "GitHub URL or username or null",
+        "location": "City, State/Country or null"
     }},
-    "summary": "Professional summary copied verbatim, or null if not present",
-    "education": [
-        {{
-            "institution": "University name",
-            "degree": "Degree type (B.Tech, M.S., etc.)",
-            "field": "Field of study",
-            "start_date": "start or null",
-            "end_date": "end or Expected year",
-            "gpa": 0.0
-        }}
-    ],
+    "summary": "Professional summary or objective statement (null if not present)",
+    "skills": ["skill1", "skill2", "skill3"],
     "experience": [
         {{
-            "company": "Company name",
-            "title": "Job title / role",
-            "location": "City or null",
-            "start_date": "start date as shown",
-            "end_date": "end date or Present or null",
-            "highlights": [
-                "Copy each bullet point EXACTLY as written in the resume"
-            ],
-            "skills": ["every technology/tool mentioned in THIS entry's bullets"],
-            "impact": ["every quantified metric from THIS entry, e.g. 700+ partners, 15+ APIs"]
+            "company": "Company Name",
+            "title": "Job Title",
+            "location": "City, Country or null",
+            "start_date": "Start date as shown (e.g., Jan 2020, 2020-01, 2020)",
+            "end_date": "End date or Present or null",
+            "description": "Role description or responsibilities",
+            "highlights": ["key achievement 1", "key achievement 2"]
         }}
     ],
+    "education": [
+        {{
+            "institution": "University/School Name",
+            "degree": "Degree type (B.S., M.S., PhD, etc.)",
+            "field": "Field of study or major",
+            "start_date": "Start year or null",
+            "end_date": "End/graduation year",
+            "gpa": null or numeric GPA if mentioned
+        }}
+    ],
+    "certifications": ["Certification 1", "Certification 2"],
     "projects": [
         {{
-            "name": "Project name (without parenthetical tech list)",
-            "tech_stack": ["technologies listed in parentheses next to project name"],
-            "highlights": [
-                "Copy each bullet point EXACTLY as written"
-            ],
-            "skills": ["tech_stack items PLUS any additional technologies from the bullets"],
-            "impact": ["every quantified metric, e.g. 94% accuracy, 65ms latency"]
+            "name": "Project Name",
+            "description": "Brief description",
+            "technologies": ["tech1", "tech2"],
+            "url": "project URL if mentioned or null"
         }}
     ],
-    "research": [
-        {{
-            "title": "Research title verbatim",
-            "venue": "Publication venue or null",
-            "status": "Published, Awaiting Approval, etc. or null",
-            "highlights": [
-                "Copy each bullet point EXACTLY as written"
-            ],
-            "skills": ["technologies/methods mentioned"],
-            "impact": ["quantified results, e.g. SSIM of 0.742, PSNR of 23.8 dB"]
-        }}
-    ],
-    "skills": [
-        "FLAT LIST of EVERY technology, tool, language, framework, platform, database, cloud service mentioned ANYWHERE in the entire resume — deduplicated"
-    ],
-    "areas_of_interest": ["domains/areas of interest if listed, e.g. AI/ML, Data Science"],
-    "soft_skills": ["soft skills if listed, e.g. Leadership, Critical Thinking"],
-    "certifications": ["certification names if any"],
-    "extra_sections": {{
-        "section_name": "content for any resume sections not covered above"
+    "extraction_confidence": {{
+        "name": 0.0-1.0,
+        "contact": 0.0-1.0,
+        "experience": 0.0-1.0,
+        "skills": 0.0-1.0,
+        "education": 0.0-1.0
     }}
 }}
 
-**Return ONLY the JSON object. No markdown fences, no explanation, no text outside the JSON.**"""
+**Rules:**
+- Use null for missing/uncertain fields, never empty strings
+- Extract ALL entries from each section, not just the first few
+- Skills should include: programming languages, frameworks, databases, tools, cloud platforms, methodologies
+- For dates, preserve the original format from the resume
+- Be precise with the candidate's full name - it's usually the largest text at the top
+- Do not confuse university names, company names, or location names with the candidate's name
+- If GPA is mentioned as percentage, convert to 4.0 scale (divide by 25)
+
+**Return ONLY the JSON object, no markdown, no explanation.**"""
 
 
 JD_EXTRACTION_PROMPT = """Extract structured information from this job description.
@@ -682,168 +663,39 @@ JD_EXTRACTION_PROMPT = """Extract structured information from this job descripti
 **Return ONLY the JSON object, no markdown, no explanation.**"""
 
 
-# ============================================================================
-# Hybrid Matching — LLM Sidecar Assessment Prompt
-# ============================================================================
-
-LLM_MATCH_ASSESSMENT_PROMPT = """You are a hiring assessment engine. You receive a candidate's resume data, a job description, and preliminary algorithmic match scores. Your job is to provide a QUALITATIVE assessment that fills gaps the algorithm cannot detect.
-
-The algorithm already computed:
-- Embedding-based semantic similarity: {semantic_score}/100
-- Keyword + soft skill match: {skill_score}/100 (matched: {matched_skills}, missing: {missing_skills})
-- Experience heuristic: {experience_score}/100
-
-**Candidate Resume Data:**
-Skills: {resume_skills}
-Experience:
-{resume_experience}
-Projects:
-{resume_projects}
-Research:
-{resume_research}
-Areas of Interest: {resume_interests}
-
-**Job Description:**
-Title: {jd_title}
-Required Skills: {jd_required_skills}
-Preferred Skills: {jd_preferred_skills}
-Responsibilities:
-{jd_responsibilities}
-Qualifications:
-{jd_qualifications}
-
-**Your task — answer these questions via structured JSON:**
-
-1. TRANSFERABLE SKILLS: Which resume experiences demonstrate competence in JD-required skills even if the exact keyword is absent? Example: candidate built "real-time Tableau dashboard from 15+ APIs" → relevant to "Data Visualization" requirement even though "Data Visualization" is not in their skills list.
-
-2. EXPERIENCE QUALITY: Are the candidate's roles/projects substantive and relevant to the JD, or are they superficial (very short tenures, academic-only, tool-only familiarity without depth)?
-
-3. RISK FLAGS: What are concrete hiring risks? (e.g. no production experience, all internships < 3 months, skills listed but never demonstrated in projects, mismatch between claimed interests and actual work)
-
-4. STRENGTHS: What genuine strengths does this candidate bring to this specific role?
-
-5. FIT SCORE: Given everything above, rate overall candidate-job fit from 0-100. Be calibrated: 70+ means the candidate can meaningfully contribute from day one; 40-69 means trainable but gaps exist; below 40 means significant mismatch.
-
-**Output JSON — return ONLY this structure, no markdown fences, no explanation:**
-{{
-    "fit_score": 0-100,
-    "reasoning": "2-3 sentences explaining the score. Reference specific resume items and JD requirements.",
-    "transferable_skills": [
-        {{
-            "resume_evidence": "specific experience or project bullet from resume",
-            "maps_to_requirement": "the JD skill or responsibility it satisfies",
-            "confidence": "high|medium|low"
-        }}
-    ],
-    "experience_quality": "strong|moderate|weak|minimal",
-    "experience_quality_reasoning": "1 sentence explaining why",
-    "risk_flags": [
-        "concrete risk statement"
-    ],
-    "strengths": [
-        "concrete strength statement referencing resume evidence"
-    ]
-}}
-
-**Rules:**
-- Be SPECIFIC. Reference actual skills, project names, company names, and JD requirements.
-- Do NOT hallucinate skills or experiences not present in the resume data.
-- Do NOT give the candidate career advice. You are assessing fit, not coaching.
-- Transferable skills must have concrete resume evidence — do not speculate.
-- If the algorithm already matched a skill exactly, do NOT repeat it in transferable_skills.
-- fit_score must be an integer."""
-
-
 # Prompt for candidate-JD fit analysis
-CANDIDATE_FIT_ANALYSIS_PROMPT = """You are an internal hiring assessment engine that prepares briefing notes for an AI interviewer.
+CANDIDATE_FIT_ANALYSIS_PROMPT = """Analyze the candidate's fit for this role based on their resume and the job requirements.
 
-You are NOT interacting with the candidate.
-You are preparing operational instructions for the interviewer.
-
-Your output will directly control how the interviewer conducts the interview.
-
-Analyze the candidate’s resume against the job requirements and convert the analysis into interview execution guidance.
-
-Candidate Data:
+**Candidate Resume Summary:**
 {resume_summary}
 
-Job Requirements:
+**Job Requirements:**
 {jd_summary}
 
-Match Scores:
+**Match Scores (computed):**
 - Overall Score: {overall_score}/100
 - Skill Match: {skill_score}/100
 - Experience Match: {experience_score}/100
 
-Matched Skills: {matched_skills}
-Missing Skills: {missing_skills}
+**Matched Skills:** {matched_skills}
+**Missing Skills:** {missing_skills}
 
-Your job:
-Determine what must be VERIFIED, CHALLENGED, or PROBED during the interview.
-
-Return JSON in this exact structure:
-
-{
-  "fit_assessment": "strong|moderate|weak",
-
-  "verification_targets": [
-    "skills or experiences the interviewer must confirm are genuinely understood"
-  ],
-
-  "challenge_areas": [
-    "claims likely to be superficial or resume-inflated that require deeper questioning"
-  ],
-
-  "missing_critical_skills": [
-    "required skills not present in the resume that must be tested through questions"
-  ],
-
-  "risk_indicators": [
-    "possible hiring risks such as shallow project work, tool-only familiarity, short tenures, or inconsistent experience"
-  ],
-
-  "interview_plan": {
-    "primary_focus": [
-      "top priority technical areas to question"
+**Provide analysis in this JSON format:**
+{{
+    "overall_fit": "strong|moderate|weak",
+    "fit_score": 0-100,
+    "strengths": [
+        "Specific strength relevant to this role"
     ],
-    "secondary_focus": [
-      "additional areas to probe if time allows"
+    "concerns": [
+        "Specific concern or gap"
     ],
-    "behavioral_checks": [
-      "soft skill or communication behaviors to evaluate"
+    "interview_focus_areas": [
+        "Topic to probe during interview"
     ],
-    "depth_probing_required": true
-  },
+    "summary": "2-3 sentence executive summary of candidate fit",
+    "recommendation": "proceed|conditional|reject",
+    "recommendation_reasoning": "Brief explanation of recommendation"
+}}
 
-  "question_strategy": {
-    "recommended_question_types": [
-      "conceptual",
-      "scenario-based",
-      "debugging",
-      "experience validation"
-    ],
-    "difficulty_start": "easy|medium|hard",
-    "difficulty_ceiling": "medium|hard",
-    "when_to_increase_difficulty": "condition describing when interviewer should escalate",
-    "when_to_stop_probings": "condition describing when sufficient evidence is collected"
-  },
-
-  "hire_signal_logic": {
-    "strong_hire_if": [
-      "clear evidence patterns indicating strong candidate"
-    ],
-    "reject_if": [
-      "clear failure patterns indicating unsuitable candidate"
-    ]
-  }
-}
-
-Rules:
-- Do NOT summarize the candidate.
-- Do NOT give career advice.
-- Do NOT speak to the candidate.
-- Every field must help the interviewer decide the next question.
-- Be concrete and reference the job requirements when possible.
-
-Return ONLY valid JSON.
-"""
+**Be specific and actionable. Reference actual skills and experience from the resume.**"""

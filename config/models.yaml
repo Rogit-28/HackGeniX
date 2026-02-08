@@ -32,17 +32,6 @@ providers:
     # model: "medium"
     # compute_type: "int8"
     
-  matching:
-    # LLM sidecar for hybrid resume-JD matching.
-    # When enabled, an LLM qualitative pass runs alongside the
-    # embedding-based quantitative scores. Set enabled: false to
-    # use pure algorithmic matching only.
-    provider: "ollama"  # Options: vllm, ollama, openai-compatible
-    model: "qwen2.5:3b"
-    enabled: true  # Master switch — false = pure embedding, true = hybrid
-    max_tokens: 1024
-    temperature: 0.1
-
   tts:
     provider: "coqui-xtts"  # Options: coqui-xtts, piper, styletts2
     model: "tts_models/multilingual/multi-dataset/xtts_v2"

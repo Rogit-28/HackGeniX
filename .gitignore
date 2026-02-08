@@ -91,3 +91,10 @@ tests_personal/
 
 # Cache
 .cache/
+
+# Generated reports and local storage
+reports/
+storage/
+
+# Windows artifacts
+nul

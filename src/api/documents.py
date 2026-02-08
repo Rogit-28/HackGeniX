@@ -23,8 +23,6 @@ from src.models.documents import (
     MatchResult,
     ResumeDocument,
     JobDescriptionDocument,
-    ParsedResume,
-    ParsedJobDescription,
 )
 
 logger = logging.getLogger(__name__)
@@ -402,19 +400,12 @@ async def list_job_descriptions(
 async def match_resume_to_job(
     resume_id: str,
     job_description_id: str,
-    use_llm: bool = True,
     user: AuthenticatedUser = Depends(require_permission(Permissions.RUN_ANALYSIS)),
 ):
     """
     Match a resume against a job description.
     
     Returns match scores and analysis.
-    
-    Args:
-        resume_id: ID of the uploaded resume
-        job_description_id: ID of the job description
-        use_llm: Enable LLM qualitative sidecar (default True).
-                 Set to False for pure algorithmic matching.
     """
     # Validate resume exists
     try:
@@ -441,29 +432,16 @@ async def match_resume_to_job(
             detail="Both resume and job description must be parsed before matching"
         )
     
-    # Reconstruct Pydantic models from stored dicts
-    resume_parsed = resume.get("parsed_data")
-    jd_parsed = jd.get("parsed_data")
-    
-    if not resume_parsed or not jd_parsed:
-        raise HTTPException(
-            status_code=400,
-            detail="Parsed data missing from one or both documents. Please re-upload."
-        )
-    
-    parsed_resume = ParsedResume(**resume_parsed)
-    parsed_jd = ParsedJobDescription(**jd_parsed)
-    
-    # Run semantic matching
-    from src.services.semantic_matcher import get_semantic_matcher
-    
-    matcher = get_semantic_matcher()
-    result = await matcher.match(
-        resume=parsed_resume,
-        job_description=parsed_jd,
+    # TODO: Call semantic matcher service
+    # For now, return placeholder
+    return MatchResult(
         resume_id=resume_id,
         job_description_id=job_description_id,
-        use_llm=use_llm,
+        overall_score=0,
+        skill_match_score=0,
+        experience_match_score=0,
+        semantic_similarity_score=0,
+        matched_skills=[],
+        missing_skills=[],
+        recommendations=["Documents need to be processed by the matching service"],
     )
-    
-    return result
