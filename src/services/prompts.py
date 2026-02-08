@@ -683,38 +683,95 @@ JD_EXTRACTION_PROMPT = """Extract structured information from this job descripti
 
 
 # Prompt for candidate-JD fit analysis
-CANDIDATE_FIT_ANALYSIS_PROMPT = """Analyze the candidate's fit for this role based on their resume and the job requirements.
+CANDIDATE_FIT_ANALYSIS_PROMPT = """You are an internal hiring assessment engine that prepares briefing notes for an AI interviewer.
 
-**Candidate Resume Summary:**
+You are NOT interacting with the candidate.
+You are preparing operational instructions for the interviewer.
+
+Your output will directly control how the interviewer conducts the interview.
+
+Analyze the candidate’s resume against the job requirements and convert the analysis into interview execution guidance.
+
+Candidate Data:
 {resume_summary}
 
-**Job Requirements:**
+Job Requirements:
 {jd_summary}
 
-**Match Scores (computed):**
+Match Scores:
 - Overall Score: {overall_score}/100
 - Skill Match: {skill_score}/100
 - Experience Match: {experience_score}/100
 
-**Matched Skills:** {matched_skills}
-**Missing Skills:** {missing_skills}
+Matched Skills: {matched_skills}
+Missing Skills: {missing_skills}
 
-**Provide analysis in this JSON format:**
-{{
-    "overall_fit": "strong|moderate|weak",
-    "fit_score": 0-100,
-    "strengths": [
-        "Specific strength relevant to this role"
-    ],
-    "concerns": [
-        "Specific concern or gap"
-    ],
-    "interview_focus_areas": [
-        "Topic to probe during interview"
-    ],
-    "summary": "2-3 sentence executive summary of candidate fit",
-    "recommendation": "proceed|conditional|reject",
-    "recommendation_reasoning": "Brief explanation of recommendation"
-}}
+Your job:
+Determine what must be VERIFIED, CHALLENGED, or PROBED during the interview.
 
-**Be specific and actionable. Reference actual skills and experience from the resume.**"""
+Return JSON in this exact structure:
+
+{
+  "fit_assessment": "strong|moderate|weak",
+
+  "verification_targets": [
+    "skills or experiences the interviewer must confirm are genuinely understood"
+  ],
+
+  "challenge_areas": [
+    "claims likely to be superficial or resume-inflated that require deeper questioning"
+  ],
+
+  "missing_critical_skills": [
+    "required skills not present in the resume that must be tested through questions"
+  ],
+
+  "risk_indicators": [
+    "possible hiring risks such as shallow project work, tool-only familiarity, short tenures, or inconsistent experience"
+  ],
+
+  "interview_plan": {
+    "primary_focus": [
+      "top priority technical areas to question"
+    ],
+    "secondary_focus": [
+      "additional areas to probe if time allows"
+    ],
+    "behavioral_checks": [
+      "soft skill or communication behaviors to evaluate"
+    ],
+    "depth_probing_required": true
+  },
+
+  "question_strategy": {
+    "recommended_question_types": [
+      "conceptual",
+      "scenario-based",
+      "debugging",
+      "experience validation"
+    ],
+    "difficulty_start": "easy|medium|hard",
+    "difficulty_ceiling": "medium|hard",
+    "when_to_increase_difficulty": "condition describing when interviewer should escalate",
+    "when_to_stop_probings": "condition describing when sufficient evidence is collected"
+  },
+
+  "hire_signal_logic": {
+    "strong_hire_if": [
+      "clear evidence patterns indicating strong candidate"
+    ],
+    "reject_if": [
+      "clear failure patterns indicating unsuitable candidate"
+    ]
+  }
+}
+
+Rules:
+- Do NOT summarize the candidate.
+- Do NOT give career advice.
+- Do NOT speak to the candidate.
+- Every field must help the interviewer decide the next question.
+- Be concrete and reference the job requirements when possible.
+
+Return ONLY valid JSON.
+"""
