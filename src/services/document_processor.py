@@ -21,6 +21,8 @@ from src.models.documents import (
     ContactInfo,
     Education,
     Experience,
+    Project,
+    Research,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,14 +47,18 @@ class DocumentProcessor:
         """
         Extract text content from a PDF file.
 
+        Tries pdfplumber first (fast, works for normal PDFs). If the PDF is
+        image-based or uses non-standard fonts (common with LaTeX/Overleaf
+        exports), falls back to OCR via Tesseract.
+
         Args:
             pdf_bytes: PDF file content as bytes
 
         Returns:
             Extracted text content
         """
+        # --- Attempt 1: pdfplumber (text-based PDFs) ---
         text_parts = []
-
         try:
             with open_pdf(io.BytesIO(pdf_bytes)) as pdf:
                 for page in pdf.pages:
@@ -60,10 +66,51 @@ class DocumentProcessor:
                     if page_text:
                         text_parts.append(page_text)
         except Exception as e:
-            logger.error(f"Error extracting text from PDF: {e}")
-            raise
+            logger.warning(f"pdfplumber extraction failed: {e}")
 
-        return "\n".join(text_parts)
+        text = "\n".join(text_parts).strip()
+        if len(text) >= 50:
+            return text
+
+        # --- Attempt 2: OCR via PyMuPDF + Tesseract ---
+        logger.info("pdfplumber returned little/no text, falling back to OCR")
+        try:
+            import fitz  # PyMuPDF
+            import pytesseract
+            from PIL import Image
+
+            pytesseract.pytesseract.tesseract_cmd = (
+                r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+            )
+
+            ocr_parts = []
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            for page_num, page in enumerate(doc):
+                pix = page.get_pixmap(dpi=300)
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                page_text = pytesseract.image_to_string(img)
+                if page_text and page_text.strip():
+                    ocr_parts.append(page_text)
+                logger.debug(f"OCR page {page_num}: {len(page_text)} chars")
+            doc.close()
+
+            ocr_text = "\n".join(ocr_parts).strip()
+            if ocr_text:
+                logger.info(f"OCR extracted {len(ocr_text)} chars from PDF")
+                return ocr_text
+
+        except ImportError as e:
+            logger.warning(f"OCR dependencies not available: {e}")
+        except Exception as e:
+            logger.error(f"OCR extraction failed: {e}")
+
+        # If both methods fail, return whatever we got (possibly empty)
+        if text:
+            return text
+        raise ValueError(
+            "Could not extract text from PDF. The file may be image-based "
+            "and OCR dependencies (pymupdf, pytesseract, Tesseract) are required."
+        )
 
     async def extract_text_from_docx(self, docx_bytes: bytes) -> str:
         """
@@ -166,14 +213,18 @@ class DocumentProcessor:
             prompt = RESUME_EXTRACTION_PROMPT.format(resume_text=resume_text)
 
             messages = [
-                system_message("You are an expert resume parser. Extract information accurately and completely."),
+                system_message(
+                    "You are a JSON formatter. Your ONLY job is to map raw resume text "
+                    "into structured JSON key-value pairs. Copy every word verbatim. "
+                    "Do not summarize, interpret, or rephrase anything."
+                ),
                 user_message(prompt),
             ]
 
             logger.info("Parsing resume with LLM...")
             response = await llm.generate(
                 messages,
-                GenerationConfig(max_tokens=2048, temperature=0.1)
+                GenerationConfig(max_tokens=4096, temperature=0.1)
             )
 
             # Parse JSON response
@@ -185,6 +236,9 @@ class DocumentProcessor:
 
             # Convert to ParsedResume
             parsed = self._json_to_parsed_resume(data, text)
+
+            # Safety-net: merge technologies from projects into skills
+            parsed = self._enrich_skills(parsed)
 
             # Cache the result
             if use_cache:
@@ -315,12 +369,53 @@ class DocumentProcessor:
                 return v
         return None
 
+    @staticmethod
+    def _enrich_skills(parsed: ParsedResume) -> ParsedResume:
+        """Merge skills from all sections into the top-level skills list.
+
+        Collects technologies/skills from experience entries, projects
+        (tech_stack + skills), and research entries, then deduplicates
+        and merges into parsed.skills.
+        """
+        existing = set(s.lower().strip() for s in parsed.skills)
+        extra: list[str] = []
+
+        def _add(item: str) -> None:
+            key = item.lower().strip()
+            if key and key not in existing:
+                extra.append(item.strip())
+                existing.add(key)
+
+        for exp in parsed.experience:
+            for s in exp.skills:
+                _add(s)
+        for proj in parsed.projects:
+            for s in proj.tech_stack:
+                _add(s)
+            for s in proj.skills:
+                _add(s)
+        for res in parsed.research:
+            for s in res.skills:
+                _add(s)
+
+        if extra:
+            parsed.skills.extend(extra)
+            logger.debug(f"Enriched skills with {len(extra)} items: {extra}")
+
+        return parsed
+
     def _json_to_parsed_resume(self, data: Dict[str, Any], raw_text: str) -> ParsedResume:
         """Convert LLM JSON output to ParsedResume model.
 
         Handles field name variations that small LLMs (e.g. qwen2.5:3b) may produce.
         """
         _first = self._get_first
+
+        def _str_list(val: Any) -> List[str]:
+            """Safely coerce a value to a list of strings."""
+            if isinstance(val, list):
+                return [s for s in val if isinstance(s, str)]
+            return []
 
         # Extract contact info -- the LLM may nest it under various keys
         contact_data = (
@@ -389,7 +484,9 @@ class DocumentProcessor:
                     start_date=exp_data.get("start_date"),
                     end_date=exp_data.get("end_date"),
                     description=exp_data.get("description"),
-                    highlights=exp_data.get("highlights", []),
+                    highlights=_str_list(exp_data.get("highlights")),
+                    skills=_str_list(exp_data.get("skills")),
+                    impact=_str_list(exp_data.get("impact")),
                 ))
 
         # Extract education
@@ -425,15 +522,77 @@ class DocumentProcessor:
             or data.get("skill_set")
             or []
         )
-        if isinstance(skills, list):
-            skills = [s for s in skills if isinstance(s, str)]
-        else:
-            skills = []
+        skills = _str_list(skills)
 
         # Extract certifications
-        certifications = data.get("certifications", [])
-        if not isinstance(certifications, list):
-            certifications = []
+        certifications = _str_list(data.get("certifications"))
+
+        # Extract projects
+        projects_list = data.get("projects") or data.get("personal_projects") or []
+        projects = []
+        for proj_data in projects_list:
+            if isinstance(proj_data, dict):
+                projects.append(Project(
+                    name=_first(
+                        proj_data.get("name"),
+                        proj_data.get("title"),
+                        proj_data.get("project_name"),
+                    ),
+                    description=proj_data.get("description"),
+                    tech_stack=_str_list(
+                        proj_data.get("tech_stack")
+                        or proj_data.get("technologies")
+                    ),
+                    highlights=_str_list(proj_data.get("highlights")),
+                    skills=_str_list(proj_data.get("skills")),
+                    impact=_str_list(proj_data.get("impact")),
+                    url=proj_data.get("url"),
+                ))
+
+        # Extract research
+        research_list = data.get("research") or data.get("publications") or []
+        research = []
+        for res_data in research_list:
+            if isinstance(res_data, dict):
+                research.append(Research(
+                    title=_first(
+                        res_data.get("title"),
+                        res_data.get("name"),
+                    ),
+                    venue=_first(
+                        res_data.get("venue"),
+                        res_data.get("journal"),
+                        res_data.get("conference"),
+                        res_data.get("publication"),
+                    ),
+                    status=res_data.get("status"),
+                    highlights=_str_list(res_data.get("highlights")),
+                    skills=_str_list(res_data.get("skills")),
+                    impact=_str_list(res_data.get("impact")),
+                ))
+
+        # Extract soft skills and areas of interest
+        soft_skills = _str_list(data.get("soft_skills"))
+        areas_of_interest = _str_list(
+            data.get("areas_of_interest")
+            or data.get("interests")
+            or data.get("domains")
+        )
+
+        # Extra sections — anything not already consumed
+        known_keys = {
+            "contact", "contact_info", "personal_info", "personal_details",
+            "summary", "education", "experience", "work_experience",
+            "skills", "technical_skills", "skill_set",
+            "certifications", "projects", "personal_projects",
+            "research", "publications",
+            "soft_skills", "areas_of_interest", "interests", "domains",
+            "name", "full_name", "extraction_confidence",
+        }
+        extra_sections = {
+            k: v for k, v in data.items()
+            if k not in known_keys and not k.startswith("_")
+        }
 
         return ParsedResume(
             contact=contact,
@@ -442,6 +601,11 @@ class DocumentProcessor:
             experience=experience,
             education=education,
             certifications=certifications,
+            projects=projects,
+            research=research,
+            soft_skills=soft_skills,
+            areas_of_interest=areas_of_interest,
+            extra_sections=extra_sections,
             raw_text=raw_text,
         )
 
@@ -530,6 +694,8 @@ class DocumentProcessor:
                             "end_date": exp.end_date,
                             "description": exp.description,
                             "highlights": exp.highlights,
+                            "skills": exp.skills,
+                            "impact": exp.impact,
                         }
                         for exp in parsed.experience
                     ],
@@ -545,6 +711,32 @@ class DocumentProcessor:
                         for edu in parsed.education
                     ],
                     "certifications": parsed.certifications,
+                    "projects": [
+                        {
+                            "name": proj.name,
+                            "description": proj.description,
+                            "tech_stack": proj.tech_stack,
+                            "highlights": proj.highlights,
+                            "skills": proj.skills,
+                            "impact": proj.impact,
+                            "url": proj.url,
+                        }
+                        for proj in parsed.projects
+                    ],
+                    "research": [
+                        {
+                            "title": res.title,
+                            "venue": res.venue,
+                            "status": res.status,
+                            "highlights": res.highlights,
+                            "skills": res.skills,
+                            "impact": res.impact,
+                        }
+                        for res in parsed.research
+                    ],
+                    "soft_skills": parsed.soft_skills,
+                    "areas_of_interest": parsed.areas_of_interest,
+                    "extra_sections": parsed.extra_sections,
                     "_raw_text": parsed.raw_text,
                 }
             elif isinstance(parsed, ParsedJobDescription):

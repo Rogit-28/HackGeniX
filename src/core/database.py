@@ -6,6 +6,7 @@ Uses Motor for async MongoDB operations.
 import logging
 from typing import Optional
 
+import certifi
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from pymongo.errors import ServerSelectionTimeoutError
 
@@ -46,6 +47,7 @@ class MongoDBClient:
             self._client = AsyncIOMotorClient(
                 settings.mongodb_uri,
                 serverSelectionTimeoutMS=5000,
+                tlsCAFile=certifi.where(),
             )
             # Verify connection
             await self._client.admin.command("ping")

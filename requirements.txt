@@ -21,6 +21,8 @@ python-dotenv==1.0.0
 pypdf2==3.0.1
 pdfplumber==0.10.3
 python-docx==1.1.0
+pymupdf>=1.24.0  # Robust PDF rendering for OCR fallback
+pytesseract>=0.3.10  # OCR for image-based PDFs (requires Tesseract system binary)
 
 # ============= NLP & Embeddings =============
 sentence-transformers==2.2.2

@@ -51,6 +51,29 @@ class Experience(BaseModel):
     end_date: Optional[str] = None
     description: Optional[str] = None
     highlights: List[str] = Field(default_factory=list)
+    skills: List[str] = Field(default_factory=list)
+    impact: List[str] = Field(default_factory=list)
+
+
+class Project(BaseModel):
+    """Project entry."""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    tech_stack: List[str] = Field(default_factory=list)
+    highlights: List[str] = Field(default_factory=list)
+    skills: List[str] = Field(default_factory=list)
+    impact: List[str] = Field(default_factory=list)
+    url: Optional[str] = None
+
+
+class Research(BaseModel):
+    """Research / publication entry."""
+    title: Optional[str] = None
+    venue: Optional[str] = None
+    status: Optional[str] = None
+    highlights: List[str] = Field(default_factory=list)
+    skills: List[str] = Field(default_factory=list)
+    impact: List[str] = Field(default_factory=list)
 
 
 class ParsedResume(BaseModel):
@@ -61,6 +84,11 @@ class ParsedResume(BaseModel):
     experience: List[Experience] = Field(default_factory=list)
     education: List[Education] = Field(default_factory=list)
     certifications: List[str] = Field(default_factory=list)
+    projects: List[Project] = Field(default_factory=list)
+    research: List[Research] = Field(default_factory=list)
+    soft_skills: List[str] = Field(default_factory=list)
+    areas_of_interest: List[str] = Field(default_factory=list)
+    extra_sections: Dict[str, Any] = Field(default_factory=dict)
     languages: List[str] = Field(default_factory=list)
     entities: List[ParsedEntity] = Field(default_factory=list)
     raw_text: str = ""
@@ -174,3 +202,12 @@ class MatchResult(BaseModel):
     matched_skills: List[str] = Field(default_factory=list)
     missing_skills: List[str] = Field(default_factory=list)
     recommendations: List[str] = Field(default_factory=list)
+    # LLM sidecar fields (populated only when hybrid matching is enabled)
+    llm_fit_score: Optional[float] = None
+    llm_reasoning: Optional[str] = None
+    transferable_skills: List[Dict[str, str]] = Field(default_factory=list)
+    experience_quality: Optional[str] = None
+    experience_quality_reasoning: Optional[str] = None
+    risk_flags: List[str] = Field(default_factory=list)
+    strengths: List[str] = Field(default_factory=list)
+    llm_enabled: bool = False
