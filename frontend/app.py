@@ -347,16 +347,16 @@ def load_session(session_id: str) -> Tuple[str, str, str]:
         return f"Error: {result['error']}", "", ""
     
     # Extract current question
-    current_q = result.get("current_question", {})
-    question_text = current_q.get("question", "No question available")
-    question_type = current_q.get("type", "unknown")
+    current_q = result.get("current_question") or {}
+    question_text = current_q.get("question_text", "No question available")
+    question_stage = current_q.get("stage", "unknown")
     
     status = result.get("status", "unknown")
     progress = f"Question {result.get('current_question_index', 0) + 1} of {result.get('total_questions', 0)}"
     
     session_info = f"Session: {current_session_id}\nStatus: {status}\n{progress}"
     
-    return session_info, f"[{question_type.upper()}]\n\n{question_text}", ""
+    return session_info, f"[{question_stage.upper()}]\n\n{question_text}", ""
 
 
 def refresh_session() -> Tuple[str, str]:
@@ -371,16 +371,16 @@ def refresh_session() -> Tuple[str, str]:
     if "error" in result:
         return f"Error: {result['error']}", ""
     
-    current_q = result.get("current_question", {})
-    question_text = current_q.get("question", "No question available")
-    question_type = current_q.get("type", "unknown")
+    current_q = result.get("current_question") or {}
+    question_text = current_q.get("question_text", "No question available")
+    question_stage = current_q.get("stage", "unknown")
     
     status = result.get("status", "unknown")
     progress = f"Question {result.get('current_question_index', 0) + 1} of {result.get('total_questions', 0)}"
     
     session_info = f"Session: {current_session_id}\nStatus: {status}\n{progress}"
     
-    return session_info, f"[{question_type.upper()}]\n\n{question_text}"
+    return session_info, f"[{question_stage.upper()}]\n\n{question_text}"
 
 
 def submit_text_answer(answer: str) -> Tuple[str, str, str]:
@@ -401,8 +401,17 @@ def submit_text_answer(answer: str) -> Tuple[str, str, str]:
     
     # Get evaluation feedback
     evaluation = result.get("evaluation", {})
-    score = evaluation.get("score", "N/A")
-    feedback = evaluation.get("feedback", "No feedback")
+    scores = evaluation.get("scores", {})
+    score = scores.get("overall", "N/A")
+    strengths = evaluation.get("strengths", [])
+    improvements = evaluation.get("improvements", [])
+    
+    feedback_parts = []
+    if strengths:
+        feedback_parts.append("Strengths:\n" + "\n".join(f"  - {s}" for s in strengths))
+    if improvements:
+        feedback_parts.append("Areas to improve:\n" + "\n".join(f"  - {i}" for i in improvements))
+    feedback = "\n\n".join(feedback_parts) if feedback_parts else "No feedback"
     
     eval_text = f"Score: {score}/10\n\n{feedback}"
     
@@ -452,8 +461,17 @@ def submit_audio_answer(audio) -> Tuple[str, str, str]:
         return f"Error: {result['error']}", "", ""
     
     evaluation = result.get("evaluation", {})
-    score = evaluation.get("score", "N/A")
-    feedback = evaluation.get("feedback", "No feedback")
+    scores = evaluation.get("scores", {})
+    score = scores.get("overall", "N/A")
+    strengths = evaluation.get("strengths", [])
+    improvements = evaluation.get("improvements", [])
+    
+    feedback_parts = []
+    if strengths:
+        feedback_parts.append("Strengths:\n" + "\n".join(f"  - {s}" for s in strengths))
+    if improvements:
+        feedback_parts.append("Areas to improve:\n" + "\n".join(f"  - {i}" for i in improvements))
+    feedback = "\n\n".join(feedback_parts) if feedback_parts else "No feedback"
     
     eval_text = f"Score: {score}/10\n\n{feedback}"
     
@@ -473,7 +491,7 @@ def play_question_tts() -> Optional[str]:
     if "error" in result:
         return None
     
-    question_text = result.get("current_question", {}).get("question", "")
+    question_text = (result.get("current_question") or {}).get("question_text", "")
     if not question_text:
         return None
     

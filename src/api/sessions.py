@@ -6,14 +6,14 @@ Provides REST API for managing complete interview sessions.
 import logging
 from typing import Optional, List
 
+from bson import ObjectId
 from fastapi import APIRouter, HTTPException, status, Query, Depends
 
-from src.core.auth import get_current_user, require_role, require_permission, require_session_access
+from src.core.auth import require_permission, require_session_access
+from src.core.database import mongodb_client
 from src.core.permissions import Permissions
-from src.models.auth import AuthenticatedUser, UserRole
+from src.models.auth import AuthenticatedUser
 from src.models.interview import (
-    InterviewSession,
-    InterviewConfig,
     InterviewStatus,
     StartInterviewRequest,
     StartInterviewResponse,
@@ -31,63 +31,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/sessions", tags=["sessions"])
 
 
-# Mock document storage (in production, this would be a database)
-# For now, we'll store parsed documents here for testing
-_mock_resumes: dict = {}
-_mock_jds: dict = {}
-
-
-def _get_mock_resume() -> ParsedResume:
-    """Get a mock resume for testing."""
-    return ParsedResume(
-        contact={"name": "John Doe", "email": "john@example.com"},
-        summary="Experienced software engineer with 5+ years in backend development.",
-        skills=["Python", "FastAPI", "PostgreSQL", "Docker", "Kubernetes", "AWS", "Redis", "GraphQL"],
-        experience=[
-            {
-                "company": "Tech Corp",
-                "title": "Senior Software Engineer",
-                "description": "Led backend development team, designed microservices architecture.",
-            },
-            {
-                "company": "StartupXYZ",
-                "title": "Software Engineer",
-                "description": "Built REST APIs and data pipelines.",
-            },
-        ],
-        education=[
-            {
-                "institution": "State University",
-                "degree": "B.S. Computer Science",
-            }
-        ],
-        raw_text="John Doe - Senior Software Engineer with expertise in Python and cloud technologies.",
-    )
-
-
-def _get_mock_jd() -> ParsedJobDescription:
-    """Get a mock job description for testing."""
-    return ParsedJobDescription(
-        title="Senior Backend Engineer",
-        company="HackGeniX Tech",
-        required_skills=["Python", "FastAPI", "PostgreSQL", "Docker", "REST APIs"],
-        preferred_skills=["Kubernetes", "AWS", "Redis", "GraphQL", "CI/CD"],
-        responsibilities=[
-            "Design and implement scalable backend services",
-            "Write clean, maintainable, and well-tested code",
-            "Collaborate with cross-functional teams",
-            "Mentor junior developers",
-        ],
-        qualifications=[
-            "5+ years of software engineering experience",
-            "Strong Python skills",
-            "Experience with cloud platforms",
-        ],
-        experience_years_min=5,
-        raw_text="Senior Backend Engineer position at HackGeniX Tech.",
-    )
-
-
 @router.post("/start", response_model=StartInterviewResponse)
 async def start_interview(
     request: StartInterviewRequest,
@@ -101,12 +44,57 @@ async def start_interview(
     """
     orchestrator = get_interview_orchestrator()
     
+    # Fetch resume from MongoDB
     try:
-        # In production, fetch from database
-        # For now, use mock data or stored data
-        resume = _mock_resumes.get(request.resume_id) or _get_mock_resume()
-        jd = _mock_jds.get(request.job_description_id) or _get_mock_jd()
-        
+        resume_doc = await mongodb_client.resumes.find_one(
+            {"_id": ObjectId(request.resume_id)}
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid resume ID: {request.resume_id}",
+        )
+    
+    if not resume_doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Resume not found: {request.resume_id}",
+        )
+    
+    if resume_doc.get("status") != "parsed" or not resume_doc.get("parsed_data"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Resume must be successfully parsed before starting an interview. Please re-upload.",
+        )
+    
+    # Fetch job description from MongoDB
+    try:
+        jd_doc = await mongodb_client.job_descriptions.find_one(
+            {"_id": ObjectId(request.job_description_id)}
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid job description ID: {request.job_description_id}",
+        )
+    
+    if not jd_doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job description not found: {request.job_description_id}",
+        )
+    
+    if jd_doc.get("status") != "parsed" or not jd_doc.get("parsed_data"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Job description must be successfully parsed before starting an interview. Please re-upload.",
+        )
+    
+    # Reconstruct Pydantic models from stored data
+    resume = ParsedResume(**resume_doc["parsed_data"])
+    jd = ParsedJobDescription(**jd_doc["parsed_data"])
+    
+    try:
         session, response = await orchestrator.start_interview(
             resume=resume,
             jd=jd,
@@ -197,7 +185,15 @@ async def get_session(
             detail=f"Session not found: {session_id}",
         )
     
-    return session.model_dump()
+    # model_dump() excludes @property fields, so add them manually
+    data = session.model_dump()
+    data["current_question"] = (
+        session.current_question.model_dump() if session.current_question else None
+    )
+    data["duration_minutes"] = session.duration_minutes
+    data["overall_score"] = session.overall_score
+    data["total_questions"] = len(session.questions)
+    return data
 
 
 @router.post("/{session_id}/end", response_model=InterviewReportResponse)
@@ -357,26 +353,3 @@ async def delete_session(
             detail=f"Session not found: {session_id}",
         )
 
-
-# Endpoints for managing mock documents (for testing)
-
-@router.post("/mock/resume")
-async def add_mock_resume(
-    resume_id: str,
-    resume: ParsedResume,
-    user: AuthenticatedUser = Depends(require_role(UserRole.ADMIN)),
-):
-    """Add a mock resume for testing."""
-    _mock_resumes[resume_id] = resume
-    return {"message": f"Resume {resume_id} stored", "id": resume_id}
-
-
-@router.post("/mock/jd")
-async def add_mock_jd(
-    jd_id: str,
-    jd: ParsedJobDescription,
-    user: AuthenticatedUser = Depends(require_role(UserRole.ADMIN)),
-):
-    """Add a mock job description for testing."""
-    _mock_jds[jd_id] = jd
-    return {"message": f"Job description {jd_id} stored", "id": jd_id}

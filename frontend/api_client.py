@@ -439,7 +439,7 @@ class APIClient:
         """Convert text to speech audio."""
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
-                f"{self.base_url}/api/v1/voice/tts",
+                f"{self.base_url}/api/v1/voice/synthesize",
                 json={"text": text},
                 headers=self.headers,
             )
@@ -452,7 +452,7 @@ class APIClient:
         async with httpx.AsyncClient(timeout=60.0) as client:
             files = {"audio": (filename, audio_data, "audio/wav")}
             response = await client.post(
-                f"{self.base_url}/api/v1/voice/stt",
+                f"{self.base_url}/api/v1/voice/transcribe",
                 files=files,
                 headers=self.headers,
             )

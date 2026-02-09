@@ -303,7 +303,6 @@ class InterviewProgressResponse(BaseModel):
 
 class EndInterviewRequest(BaseModel):
     """Request to end an interview early."""
-    session_id: str
     reason: Optional[str] = None
 
 
