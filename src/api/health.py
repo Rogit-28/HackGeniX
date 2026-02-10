@@ -112,7 +112,7 @@ async def health_detailed():
     except Exception as e:
         components["stt"] = {"status": "unhealthy", "error": str(e)}
 
-    # --- TTS (pyttsx3) ---
+    # --- TTS ---
     try:
         from src.providers.tts import get_tts_provider_async
         tts = await get_tts_provider_async()

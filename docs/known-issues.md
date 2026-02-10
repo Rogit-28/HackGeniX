@@ -12,10 +12,8 @@
 **Impact:** The PATH-based fix for `cublas64_12.dll` / `cudnn64_9.dll` has been verified in standalone Python tests but has NOT been confirmed working in the running FastAPI server. If it fails, faster-whisper will crash on CUDA inference and fall back would need manual intervention.
 **Status:** Awaiting user verification.
 
-### `models.yaml` TTS config mismatch
-**Location:** `config/models.yaml:47-53`
-**Impact:** The config file specifies `provider: "coqui-xtts"` for TTS, but the actual code uses `pyttsx3` (system TTS). The TTS config in `models.yaml` is not read by the TTS provider -- it's effectively ignored.
-**Fix:** Either update `models.yaml` to reflect the actual pyttsx3 provider, or implement config-aware TTS factory similar to the STT factory.
+### ~~`models.yaml` TTS config mismatch~~
+**Resolved.** The TTS factory in `src/providers/tts/__init__.py` now reads `config/models.yaml` `providers.tts` to select between Coqui XTTS v2 and pyttsx3. The config is no longer ignored.
 
 ## Resolved Bugs
 
@@ -37,11 +35,24 @@ The configured STT model is `large-v3` on CUDA with `int8` compute type (see `co
 
 The `transcribe_with_interview_context()` method mitigates this by passing technical term prompts to Whisper.
 
-### PyTorch is CPU-only
-`torch.cuda.is_available()` returns `False` because the installed PyTorch is the CPU-only build. This means `sentence-transformers` (BAAI/bge-large-en-v1.5) runs embedding inference on CPU, not GPU. faster-whisper uses CTranslate2's own CUDA backend (separate from PyTorch) so STT still runs on GPU. Installing the CUDA PyTorch build would accelerate embedding inference but would add ~2GB to the venv.
+### ~~PyTorch is CPU-only~~
+**Resolved.** PyTorch is now `2.10.0+cu126` with CUDA 12.6 support. `torch.cuda.is_available()` returns `True`. The GPU is an NVIDIA RTX 4050 Laptop (6 GB VRAM).
 
-### TTS quality
-pyttsx3 uses the system TTS engine (SAPI5 on Windows, espeak on Linux). Voice quality is robotic compared to neural TTS. This is a conscious tradeoff -- see `decisions.md`.
+### VRAM budget on 6 GB RTX 4050
+With XTTS v2 (~1.8 GB), Ollama qwen2.5:3b (~2 GB), and faster-whisper large-v3 int8 (~1.5 GB on demand), VRAM is tight. Loading the embedding model (bge-large-en-v1.5, ~1.3 GB) on CUDA alongside XTTS caused a segfault/OOM during server startup. **Fix:** Embeddings are configured to run on CPU (`config/models.yaml` `providers.embeddings.device: "cpu"`). Embedding inference on CPU is still fast (~50-100ms per query) and frees VRAM for voice models. To experiment, swap `device: "cpu"` to `device: "cuda"` in `models.yaml` — but reduce other GPU tenants first (e.g., use a smaller STT model or move TTS to CPU).
+
+### TTS quality and latency
+Coqui XTTS v2 is the primary TTS provider, producing natural-sounding speech with optional voice cloning. With CUDA PyTorch installed, XTTS inference runs on GPU at ~7-8 s per utterance (RTF ~0.34x, i.e., ~3x faster than real-time). This is acceptable for interview questions. Without a `speaker_wav` reference audio, the model uses a built-in speaker embedding ("Claribel Dervla" by default). If the `TTS` pip package is not installed, the system falls back to pyttsx3 (system TTS), which is fast but robotic.
+
+### TTS library compatibility patches (TTS 0.22.0 + transformers 4.57 + PyTorch 2.10)
+Three files in `.venv/Lib/site-packages/TTS/` required manual patches to fix compatibility with newer `transformers` and `PyTorch`:
+
+1. **`TTS/tts/layers/xtts/stream_generator.py`** (line 13-23) -- `BeamSearchScorer` was removed from `transformers`'s top-level exports in v4.50+. Fixed by importing from `transformers.generation.beam_search` instead.
+2. **`TTS/utils/io.py`** (line 44) -- PyTorch 2.6+ changed `torch.load` to default to `weights_only=True`, but Coqui checkpoints contain pickle data. Fixed by adding `kwargs.setdefault("weights_only", False)`.
+3. **`TTS/tts/layers/xtts/gpt_inference.py`** (line 9) -- `GPT2InferenceModel` extends `GPT2PreTrainedModel` but `PreTrainedModel` no longer inherits from `GenerationMixin` in transformers v4.50+, breaking `.generate()`. Fixed by adding `GenerationMixin` to the class inheritance.
+4. **`TTS/tts/layers/xtts/xtts_manager.py`** (lines 5, 13, 17) -- `SpeakerManager.__init__` used `torch.load` without `weights_only=False`, and `speaker_names` property called `.keys()` on `dict_keys`. Fixed both.
+
+**These patches will be lost if `TTS` is reinstalled.** If upgrading `TTS` or `transformers`, check whether these issues are fixed upstream first. A `postinstall` script or a `patches/` directory could automate this.
 
 ### Single-process, no horizontal scaling
 The singleton pattern and in-memory session storage mean the backend must run as a single process. No load balancing or multi-worker deployment is possible without architectural changes.

@@ -13,7 +13,7 @@
 **Tradeoff:** JSON output is frequently malformed, requiring retry logic and field-name normalization in `src/services/document_processor.py`. Larger models (7B+) would reduce parsing failures.
 
 ### pyttsx3 over neural TTS
-**Decision:** Use pyttsx3 (system TTS) instead of Coqui, Bark, or cloud TTS.  
+**Decision:** ~~Use pyttsx3 (system TTS) instead of Coqui, Bark, or cloud TTS.~~ **Superseded** -- see "Coqui XTTS v2 as primary TTS" below.  
 **Rationale:** Zero dependencies beyond the OS's built-in speech engine. No model downloads, no GPU, no API keys. Instant startup. The interview system prioritizes *having* TTS over *quality* of TTS.  
 **Tradeoff:** Robotic voice quality. Not suitable for production candidate-facing use. Swapping to a neural TTS provider only requires implementing the base interface in `src/providers/tts/`.
 
@@ -104,3 +104,23 @@
 **Decision:** Wrap SentenceTransformer model load and embedding inference in `asyncio.to_thread()` in `src/services/semantic_matcher.py`, and eager-load the model at server startup in `src/main.py:lifespan()`.  
 **Rationale:** The embedding model load (~3-5s) and inference block the async event loop, causing all concurrent requests to time out. `asyncio.to_thread()` offloads to a thread pool. Eager-loading at startup means the first interview request doesn't pay the model load cost.  
 **Tradeoff:** Thread pool adds slight overhead. The model is still loaded once as a singleton. Eager-load adds ~10-30s to server startup time.
+
+### Coqui XTTS v2 as primary TTS with pyttsx3 fallback (Session 8)
+**Decision:** Replace pyttsx3 (system TTS) with Coqui XTTS v2 as the primary TTS provider. pyttsx3 is retained as an automatic fallback if the `TTS` pip package is not installed or the model fails to load.  
+**Rationale:** pyttsx3 uses Windows SAPI5/espeak which sounds robotic and is unsuitable for candidate-facing interviews. XTTS v2 is a state-of-the-art neural TTS with voice cloning from a ~6-15 s reference audio. Runs locally (no API keys). Supports 16 languages.  
+**Tradeoff:** XTTS v2 model is ~1.8 GB (downloaded on first run, cached). GPU inference via CUDA PyTorch takes ~7-8 s per utterance (RTF ~0.34x). The model uses ~1.8 GB VRAM when loaded. When no reference audio is provided, a built-in speaker ("Claribel Dervla") is used.
+
+### CUDA PyTorch for GPU acceleration (Session 8)
+**Decision:** Replace the CPU-only PyTorch build with CUDA PyTorch (`2.10.0+cu126`) to enable GPU acceleration for XTTS v2 and sentence-transformers.  
+**Rationale:** CPU inference for XTTS v2 was ~5-10 s per utterance. With CUDA, this drops to ~7-8 s (slightly better due to XTTS's sequential nature). More importantly, sentence-transformers embeddings now run on GPU, significantly faster.  
+**Tradeoff:** CUDA PyTorch adds ~2 GB to the venv. Combined VRAM load (Ollama ~2 GB + XTTS ~1.8 GB + embeddings ~1 GB + faster-whisper ~1.5 GB on demand) approaches the 6 GB RTX 4050 limit. May need to move some models to CPU if OOM occurs.
+
+### TTS library compatibility patches (Session 8)
+**Decision:** Manually patch 4 files in `.venv/Lib/site-packages/TTS/` to fix compatibility between `TTS 0.22.0`, `transformers 4.57.6`, and `PyTorch 2.10.0`. See `docs/known-issues.md` for details.  
+**Rationale:** TTS 0.22.0 was the last Coqui release before the company shut down. It was written for `transformers ~4.30` and `PyTorch ~2.1`. Newer transformers removed `BeamSearchScorer` from top-level exports and `GenerationMixin` from `PreTrainedModel` inheritance. Newer PyTorch changed `torch.load` to `weights_only=True` by default. We can't downgrade `transformers` because `sentence-transformers 5.2.2` requires a recent version.  
+**Tradeoff:** Patches are lost on `pip install TTS` re-run. A `postinstall` script or vendored patch files would be more robust.
+
+### Config-aware TTS factory (Session 8)
+**Decision:** Build a unified `get_tts_provider()` / `get_tts_provider_async()` factory in `src/providers/tts/__init__.py` that reads `config/models.yaml` `providers.tts` section, mirroring the STT factory pattern.  
+**Rationale:** The TTS config in `models.yaml` was previously ignored entirely (known issue). The factory reads provider, model, device, and reference_audio from config, instantiates the correct provider, and falls back to pyttsx3 on any failure.  
+**Tradeoff:** Same indirection tradeoff as the STT factory. Old provider-specific factories still exported for backward compat.

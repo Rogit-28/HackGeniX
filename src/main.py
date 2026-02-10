@@ -73,6 +73,19 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(get_semantic_matcher)
     logger.info("Embedding model ready")
     
+    # Eager-load TTS model so first synthesis request isn't penalized.
+    # Coqui XTTS v2 downloads ~1.8 GB of weights on first run and loads
+    # them into RAM/VRAM, which can take 30-60 s.  If the TTS package
+    # isn't installed, the factory silently falls back to pyttsx3 (which
+    # initialises instantly), so this is safe either way.
+    from src.providers.tts import get_tts_provider_async
+    logger.info("Loading TTS model...")
+    tts = await get_tts_provider_async()
+    # If the provider supports async model loading (Coqui), trigger it now.
+    if hasattr(tts, "ensure_loaded"):
+        await tts.ensure_loaded()
+    logger.info("TTS model ready (%s)", tts.get_provider_info().get("provider", "unknown"))
+    
     yield
     
     # Shutdown

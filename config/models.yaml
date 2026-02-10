@@ -16,7 +16,7 @@ providers:
     provider: "sentence-transformers"  # Options: sentence-transformers, huggingface
     model: "BAAI/bge-large-en-v1.5"
     dimensions: 1024
-    device: "cuda"
+    device: "cpu"  # "cuda" or "cpu" — moved to CPU to free VRAM for XTTS + Ollama
     # Downgrade option for lower VRAM:
     # model: "sentence-transformers/all-MiniLM-L6-v2"
     # dimensions: 384
@@ -44,13 +44,12 @@ providers:
     temperature: 0.1
 
   tts:
-    provider: "coqui-xtts"  # Options: coqui-xtts, piper, styletts2
+    provider: "coqui-xtts"  # Options: coqui-xtts, pyttsx3
     model: "tts_models/multilingual/multi-dataset/xtts_v2"
     device: "cuda"
-    reference_audio: "assets/interviewer_voice.wav"
-    # Faster/lighter alternative:
-    # provider: "piper"
-    # model: "en_US-lessac-medium"
+    reference_audio: "assets/interviewer_voice.wav"  # Optional: WAV for voice cloning
+    speaker: "Claribel Dervla"  # Built-in speaker (used when no reference_audio exists)
+    # Fallback: if TTS pip package is not installed, pyttsx3 is used automatically
 
 # Fallback configuration
 fallbacks:

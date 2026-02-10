@@ -3,7 +3,7 @@ Voice API endpoints for STT and TTS.
 
 Provides REST API for:
 - Speech-to-text transcription (Whisper)
-- Text-to-speech synthesis (pyttsx3)
+- Text-to-speech synthesis (Coqui XTTS v2 / pyttsx3 fallback)
 - Voice configuration
 """
 import logging

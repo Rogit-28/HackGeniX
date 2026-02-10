@@ -98,12 +98,14 @@ providers:
     temperature: 0.1
 
   tts:
-    provider: "coqui-xtts"            # NOTE: actual code uses pyttsx3 regardless of this setting
+    provider: "coqui-xtts"            # coqui-xtts (recommended) | pyttsx3 (fallback)
     model: "tts_models/multilingual/multi-dataset/xtts_v2"
-    device: "cuda"
+    device: "cuda"                     # cuda | cpu | auto
+    reference_audio: "assets/interviewer_voice.wav"  # Optional voice cloning sample
+    speaker: "Claribel Dervla"         # Built-in speaker (used when no reference_audio)
 ```
 
-> **Note:** The `tts` section in `models.yaml` currently has no effect. The code always uses pyttsx3 (system TTS). This is a known config-code mismatch (see `known-issues.md`).
+> **Note:** Coqui XTTS v2 requires `pip install TTS`. On first run, the model (~1.8 GB) is downloaded automatically. If the package is not installed or loading fails, the system falls back to pyttsx3 (system TTS) automatically. For voice cloning, place a 6-15 second WAV recording at `assets/interviewer_voice.wav`. If no reference audio is provided, the model uses a built-in speaker embedding (58 speakers available; default is "Claribel Dervla").
 
 ## Pull the LLM Model
 
@@ -137,13 +139,14 @@ python -m frontend.app
 1. **Ollama running?** `curl http://localhost:11434/api/tags` should list your model.
 2. **MongoDB reachable?** Backend logs will show connection success/failure at startup.
 3. **Embedding model loads?** On first backend start, the sentence-transformers model (`BAAI/bge-large-en-v1.5`, ~1.3GB) is downloaded and eager-loaded. Look for `"Loading embedding model (this may take a moment)..."` followed by `"Embedding model ready"` in the logs. **First run may take 30-60s** for model download + load. Subsequent starts take ~10-30s (load from cache).
-4. **Backend healthy?** `curl http://localhost:8000/health` should return `{"status": "healthy"}`.
-5. **Detailed health?** `curl http://localhost:8000/health/detailed` probes all 5 components.
-6. **Frontend loads?** Open `http://localhost:7860` in browser.
-7. **Login works?** Use the Admin panel to generate a JWT token, then paste it in the Login tab.
-8. **Upload a resume.** Go to Documents tab, upload a PDF. Check that parsing completes.
-9. **Create a JD.** Use the Documents tab or API to create a job description.
-10. **Start interview.** Go to Live Session, select resume + JD, start session.
+4. **TTS model loads?** After the embedding model, the TTS model is eager-loaded. Look for `"Loading TTS model..."` followed by `"TTS model ready (coqui-xtts)"`. If `TTS` is not installed, you'll see `"TTS model ready (pyttsx3)"` (fallback). **First XTTS run downloads ~1.8 GB** of model weights.
+5. **Backend healthy?** `curl http://localhost:8000/health` should return `{"status": "healthy"}`.
+6. **Detailed health?** `curl http://localhost:8000/health/detailed` probes all 5 components.
+7. **Frontend loads?** Open `http://localhost:7860` in browser.
+8. **Login works?** Use the Admin panel to generate a JWT token, then paste it in the Login tab.
+9. **Upload a resume.** Go to Documents tab, upload a PDF. Check that parsing completes.
+10. **Create a JD.** Use the Documents tab or API to create a job description.
+11. **Start interview.** Go to Live Session, select resume + JD, start session.
 
 ## Troubleshooting
 
@@ -154,6 +157,6 @@ python -m frontend.app
 | Ollama 404 | Run `ollama pull qwen2.5:3b` and verify with `ollama list` |
 | STT fails to load | First run downloads the Whisper model (~3GB for large-v3). Needs internet access. GPU failures fall back to CPU automatically |
 | cuBLAS/cuDNN DLL not found | Install `pip install nvidia-cublas-cu12 nvidia-cudnn-cu12`. The backend registers DLL paths automatically on Windows. If the error persists, verify the DLLs exist: `.venv\Lib\site-packages\nvidia\cublas\bin\cublas64_12.dll` and `.venv\Lib\site-packages\nvidia\cudnn\bin\cudnn64_9.dll` |
-| TTS no audio | pyttsx3 needs system TTS engine (SAPI5 on Windows, espeak on Linux). Install espeak: `sudo apt install espeak` |
+| TTS no audio | If using Coqui XTTS: ensure `pip install TTS` succeeded. First run downloads ~1.8 GB model (needs internet). If XTTS fails, system auto-falls back to pyttsx3. For pyttsx3: needs system TTS engine (SAPI5 on Windows, espeak on Linux). Install espeak: `sudo apt install espeak` |
 | Port conflict | Change port: `--port 8001` for backend, or set `GRADIO_SERVER_PORT` env var for frontend |
 | JWT errors | Ensure `JWT_SECRET_KEY` matches between `.env` and `frontend/api_client.py` (default: `"your-super-secret-key-change-in-production"`) |
