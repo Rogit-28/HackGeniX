@@ -164,12 +164,12 @@ PUBLIC_PATH_PREFIXES = [
 In `src/models/interview.py`:
 ```python
 class InterviewStage(str, Enum):
-    introduction = "introduction"
-    technical = "technical"
-    behavioral = "behavioral"
-    situational = "situational"
-    closing = "closing"
-    your_stage = "your_stage"       # Add here
+    SCREENING = "screening"
+    TECHNICAL = "technical"
+    BEHAVIORAL = "behavioral"
+    SYSTEM_DESIGN = "system_design"
+    WRAP_UP = "wrap_up"
+    YOUR_STAGE = "your_stage"       # Add here
 ```
 
 ### 2. Add question count to config
@@ -178,7 +178,11 @@ In `src/models/interview.py`, `InterviewConfig`:
 ```python
 class InterviewConfig(BaseModel):
     # ... existing fields ...
-    your_stage_questions: int = 3
+    screening_questions: int = 3
+    technical_questions: int = 5
+    behavioral_questions: int = 3
+    system_design_questions: int = 1
+    your_stage_questions: int = 3       # Add here
 ```
 
 ### 3. Add stage prompt
@@ -202,8 +206,12 @@ In `src/services/interview_orchestrator.py`, the `start_interview()` method buil
 In `src/models/question_bank.py`:
 ```python
 class InterviewStageHint(str, Enum):
-    # ... existing ...
-    your_stage = "your_stage"
+    SCREENING = "screening"
+    TECHNICAL = "technical"
+    BEHAVIORAL = "behavioral"
+    SYSTEM_DESIGN = "system_design"
+    GENERAL = "general"
+    YOUR_STAGE = "your_stage"       # Add here
 ```
 
 ---
@@ -277,10 +285,26 @@ And update the `StorageClient.__init__()` to handle your backend type.
 
 ## Swap STT/TTS Provider
 
-Same pattern as LLM providers. Implement the base interface:
+### STT
 
-**STT:** See `src/providers/stt/faster_whisper_provider.py` for the interface. Key methods: `transcribe()`, `detect_language()`, `get_model_info()`.
+All STT consumers use the unified factory in `src/providers/stt/__init__.py`:
+- `get_stt_provider()` / `get_stt_provider_async()` — reads `config/models.yaml` `providers.stt` section and returns the appropriate singleton.
 
-**TTS:** See `src/providers/tts/pyttsx3_provider.py` for the interface. Key methods: `synthesize()`, `get_provider_info()`, `configure()`.
+To add a new STT provider:
 
-Register your provider in the respective factory/singleton function and update `config/models.yaml`.
+1. Create `src/providers/stt/your_provider.py`. Implement `transcribe()`, `detect_language()`, `get_model_info()` (see `faster_whisper_provider.py` for the interface).
+2. Register it in `src/providers/stt/__init__.py` — add an `elif` branch in `get_stt_provider()` for your provider name.
+3. Update `config/models.yaml`:
+   ```yaml
+   stt:
+     provider: "your-provider"
+     model: "your-model"
+   ```
+
+The old provider-specific factories (`get_faster_whisper_provider`, `get_whisper_provider`) are still exported for backward compatibility but should not be used directly.
+
+### TTS
+
+See `src/providers/tts/pyttsx3_provider.py` for the interface. Key methods: `synthesize()`, `get_provider_info()`, `configure()`.
+
+> **Note:** The `tts` section in `config/models.yaml` currently has no effect. The code always uses pyttsx3. To wire a new TTS provider, you would need to create a factory similar to the STT one.

@@ -16,31 +16,64 @@ github: Optional[str]
 
 **`Education`**
 ```
-degree: Optional[str]
 institution: Optional[str]
-year: Optional[str]           # String, not int -- LLMs return inconsistent formats
-field_of_study: Optional[str]
-gpa: Optional[str]
+degree: Optional[str]
+field: Optional[str]
+start_date: Optional[str]
+end_date: Optional[str]
+gpa: Optional[float]
 ```
 
 **`Experience`**
 ```
-title: Optional[str]
 company: Optional[str]
-duration: Optional[str]       # Free-text like "2 years" or "Jan 2020 - Mar 2022"
+title: Optional[str]
+location: Optional[str]
+start_date: Optional[str]
+end_date: Optional[str]
 description: Optional[str]
-technologies: Optional[List[str]]
+highlights: List[str]
+skills: List[str]
+impact: List[str]
+```
+
+**`Project`**
+```
+name: Optional[str]
+description: Optional[str]
+tech_stack: List[str]
+highlights: List[str]
+skills: List[str]
+impact: List[str]
+url: Optional[str]
+```
+
+**`Research`**
+```
+title: Optional[str]
+venue: Optional[str]
+status: Optional[str]
+highlights: List[str]
+skills: List[str]
+impact: List[str]
 ```
 
 **`ParsedResume`**
 ```
-contact: Optional[ContactInfo]
+contact: ContactInfo
 summary: Optional[str]
-skills: Optional[List[str]]
-experience: Optional[List[Experience]]
-education: Optional[List[Education]]
-certifications: Optional[List[str]]
-raw_text: Optional[str]       # Full extracted text before LLM parsing
+skills: List[str]
+experience: List[Experience]
+education: List[Education]
+certifications: List[str]
+projects: List[Project]
+research: List[Research]
+soft_skills: List[str]
+areas_of_interest: List[str]
+extra_sections: Dict[str, Any]
+languages: List[str]
+entities: List[ParsedEntity]
+raw_text: str                 # Full extracted text before LLM parsing
 ```
 
 **`ParsedJobDescription`**
@@ -59,12 +92,28 @@ raw_text: Optional[str]
 
 **`MatchResult`**
 ```
-overall_score: float
-skill_match: float
-experience_match: float
-education_match: float
-details: Optional[Dict]
+resume_id: str
+job_description_id: str
+overall_score: float          # 0-100, weighted composite
+skill_match_score: float      # 0-100
+experience_match_score: float # 0-100
+semantic_similarity_score: float  # 0-100
+matched_skills: List[str]
+missing_skills: List[str]
+recommendations: List[str]
+# LLM sidecar fields (populated only when hybrid matching is enabled)
+llm_fit_score: Optional[float]
+llm_reasoning: Optional[str]
+transferable_skills: List[Dict[str, str]]
+experience_quality: Optional[str]
+experience_quality_reasoning: Optional[str]
+risk_flags: List[str]
+strengths: List[str]
+llm_enabled: bool             # True when LLM sidecar ran successfully
 ```
+
+Core-only weights: semantic 35%, skills 40%, experience 25%.
+Hybrid weights (when LLM sidecar enabled): semantic 25%, skills 30%, experience 20%, llm_fit 25%.
 
 **`ResumeDocument`** / **`JobDescriptionDocument`** -- MongoDB wrapper models with `id`, `filename`, `file_path`, `uploaded_at`, `parsed_data`, `status`.
 
@@ -75,47 +124,81 @@ details: Optional[Dict]
 ### Interview (`src/models/interview.py`)
 
 **Enums:**
-- `InterviewStatus`: `pending`, `in_progress`, `paused`, `completed`, `cancelled`
-- `InterviewStage`: `introduction`, `technical`, `behavioral`, `situational`, `closing`
+- `InterviewStatus`: `created`, `in_progress`, `paused`, `completed`, `cancelled`, `failed`
+- `InterviewStage`: `screening`, `technical`, `behavioral`, `system_design`, `wrap_up`
 - `InterviewMode`: `text`, `voice`, `hybrid`
 - `QuestionStatus`: `pending`, `asked`, `answered`, `skipped`
 
 **`InterviewConfig`**
 ```
-introduction_questions: int = 2
+mode: InterviewMode = "text"
+
+# Question counts per stage
+screening_questions: int = 3
 technical_questions: int = 5
 behavioral_questions: int = 3
-situational_questions: int = 2
-closing_questions: int = 1
+system_design_questions: int = 1
+
+# Adaptive settings
 adaptive_difficulty: bool = True
-min_difficulty: int = 1
-max_difficulty: int = 10
-mode: InterviewMode = "text"
-voice_settings: Optional[Dict]
+enable_follow_ups: bool = True
+max_follow_ups_per_question: int = 2
+
+# Time limits (in seconds, 0 = no limit)
+max_duration_seconds: int = 3600
+question_timeout_seconds: int = 300
+
+# Voice settings
+tts_voice: Optional[str]
+stt_model: str = "base"
+
+# Focus areas
+focus_skills: List[str]
+exclude_topics: List[str]
+
+# Question Bank settings
 use_question_bank: bool = True
-bank_ratio: float = 0.7          # 70% bank, 30% LLM-generated
+enabled_domains: Optional[List[str]]      # None = auto-detect
+auto_detect_domains: bool = True
+bank_question_ratio: float = 0.7          # 70% bank, 30% LLM-generated
+allow_rephrasing: bool = True
+allow_personalization: bool = True
 ```
 
 **`InterviewQuestion`**
 ```
 id: str
-question: str
+question_text: str
 stage: InterviewStage
-difficulty: int
-expected_topics: List[str]
-status: QuestionStatus
-source: Optional[str]           # "bank", "llm", "hybrid"
+difficulty: str = "medium"
 category: Optional[str]
-skills: Optional[List[str]]
+purpose: str = ""
+expected_answer_points: List[str]
+follow_up_questions: List[str]
+duration_seconds: int = 120
+competency: Optional[str]         # For behavioral questions
+status: QuestionStatus
+source: str = "generated"         # "bank", "bank_rephrased", "bank_personalized", "generated"
+audio_path: Optional[str]         # For voice mode
 ```
 
 **`AnswerRecord`**
 ```
 question_id: str
+question_text: str
+stage: InterviewStage
 answer_text: str
-score: Optional[float]
-feedback: Optional[str]
-evaluation: Optional[Dict]
+answer_audio_path: Optional[str]
+
+# Evaluation results
+scores: Dict[str, float]         # e.g. {"overall": 72, "technical": 68, ...}
+strengths: List[str]
+improvements: List[str]
+follow_up_question: Optional[str]
+recommendation: str = "acceptable"
+
+# Timing
+asked_at: datetime
 answered_at: Optional[datetime]
 duration_seconds: Optional[float]
 ```
@@ -123,16 +206,24 @@ duration_seconds: Optional[float]
 **`StageProgress`**
 ```
 stage: InterviewStage
-total_questions: int
-answered: int
-average_score: Optional[float]
+total_questions: int = 0
+answered_questions: int = 0
+average_score: float = 0.0
+started_at: Optional[datetime]
+completed_at: Optional[datetime]
+
+# Computed properties:
+is_complete: bool               # answered_questions >= total_questions
+progress_percent: float         # 0-100
 ```
 
 **`InterviewSession`**
 ```
 id: str
 resume_id: str
-jd_id: str
+job_description_id: str
+candidate_name: Optional[str]
+role_title: Optional[str]
 config: InterviewConfig
 status: InterviewStatus
 current_stage: InterviewStage
@@ -140,10 +231,29 @@ current_question_index: int
 questions: List[InterviewQuestion]
 answers: List[AnswerRecord]
 stage_progress: Dict[str, StageProgress]
-match_result: Optional[MatchResult]
+
+# Performance tracking
+current_difficulty: str = "medium"
+performance_trend: str = "stable"   # improving, declining, stable
+strong_areas: List[str]
+weak_areas: List[str]
+
+# Timing
 created_at: datetime
-updated_at: Optional[datetime]
+started_at: Optional[datetime]
 completed_at: Optional[datetime]
+last_activity_at: datetime
+
+# Match analysis (computed at interview start from semantic matcher)
+match_analysis: Optional[Dict[str, Any]]
+
+# Error tracking
+error_message: Optional[str]
+
+# Computed properties:
+duration_minutes: int
+overall_score: float
+current_question: Optional[InterviewQuestion]
 ```
 
 **Request/Response models:** `StartInterviewRequest`, `StartInterviewResponse`, `SubmitAnswerRequest`, `SubmitAnswerResponse`, `InterviewProgressResponse`, `EndInterviewRequest`, `InterviewReportResponse`.
@@ -189,32 +299,38 @@ reasoning: str
 
 **`QuestionDifficulty`**: `EASY`, `MEDIUM`, `HARD`, `EXPERT`.
 
-**`InterviewStageHint`**: `introduction`, `technical`, `behavioral`, `situational`, `closing`.
+**`InterviewStageHint`**: `SCREENING`, `TECHNICAL`, `BEHAVIORAL`, `SYSTEM_DESIGN`, `GENERAL`.
 
-**`QuestionSource`**: `CURATED`, `LLM_GENERATED`, `HYBRID`.
+**`QuestionSource`**: `BANK`, `BANK_REPHRASED`, `BANK_PERSONALIZED`, `GENERATED`.
 
 **`BankQuestion`** -- raw from JSONL:
 ```
 id: str
-question: str
+question_text: str
 domain: str
 difficulty: QuestionDifficulty
 category: Optional[QuestionCategory]
 skills: List[str]
-expected_topics: List[str]
-stage_hint: Optional[InterviewStageHint]
+stage_hint: InterviewStageHint = TECHNICAL
+source_file: str
 follow_up: Optional[str]
 metadata: Optional[Dict]
 ```
 
 **`EnrichedQuestion`** -- after LLM enhancement:
 ```
-(inherits BankQuestion fields)
-enhanced_question: Optional[str]
-context_notes: Optional[str]
+id: str
+original_question: Optional[BankQuestion]    # Original bank question (if from bank)
+original_text: str                            # Original question text
+enhanced_text: str                            # LLM-enhanced version
+domain: str
+category: QuestionCategory
+skills: List[str]
+difficulty: QuestionDifficulty
+stage_hint: InterviewStageHint
 source: QuestionSource
-original_id: Optional[str]
-relevance_score: Optional[float]
+resume_context: Optional[str]                 # What resume element it relates to
+personalization_notes: Optional[str]          # Why this personalization was chosen
 ```
 
 **`DOMAIN_KEYWORDS`** -- dict mapping domain names to keyword lists, used by `detect_domains_from_text()`.
@@ -285,22 +401,43 @@ Database name: `interview_system` (hardcoded in `src/core/database.py`).
 ### `interview_sessions`
 ```json
 {
-  "_id": ObjectId,
-  "session_id": "uuid-string",
+  "_id": "uuid-string",
   "resume_id": "...",
-  "jd_id": "...",
+  "job_description_id": "...",
+  "candidate_name": "...",
+  "role_title": "...",
   "config": { ... },
   "status": "in_progress",
   "current_stage": "technical",
+  "current_question_index": 3,
   "questions": [ ... ],
   "answers": [ ... ],
   "stage_progress": { ... },
+  "current_difficulty": "medium",
+  "performance_trend": "stable",
+  "strong_areas": ["Python", "System Design"],
+  "weak_areas": ["Kubernetes"],
+  "match_analysis": {
+    "overall_score": 68.5,
+    "skill_match_score": 72.0,
+    "matched_skills": ["Python", "Docker"],
+    "missing_skills": ["Terraform"],
+    "llm_fit_score": 65.0,
+    "llm_reasoning": "...",
+    "transferable_skills": [...],
+    "risk_flags": [...],
+    "strengths": [...],
+    "llm_enabled": true
+  },
   "created_at": ISODate,
-  "updated_at": ISODate
+  "started_at": ISODate,
+  "completed_at": null,
+  "last_activity_at": ISODate,
+  "error_message": null
 }
 ```
 
-**Important:** Sessions are also stored in-memory in `InterviewOrchestrator._sessions`. The in-memory dict is the source of truth during a session. MongoDB is written to for persistence but the orchestrator reads from memory, not from the DB. If the server restarts, in-memory sessions are lost -- only MongoDB records survive, and there is no recovery mechanism to reload them.
+**Important:** Sessions are stored both in-memory (`InterviewOrchestrator._sessions` dict) and in MongoDB (via `SessionRepository`). During an active session, the in-memory dict is the primary source of truth, with write-through to MongoDB on every mutation. If the server restarts, `get_session()` falls back to loading from MongoDB on demand -- sessions survive restarts but are not bulk-reloaded at startup.
 
 ### `interviews` (used by `src/api/interviews.py`)
 Separate from sessions. Stores interview scheduling metadata. Partially implemented -- this collection is used by a CRUD layer that appears to be legacy or parallel to the sessions system.
@@ -312,7 +449,7 @@ Stores generated report JSON documents. The PDF binary is stored separately in t
 
 1. **Enums stored as strings.** Models use `class Config: use_enum_values = True`, so MongoDB and JSON responses contain string values (`"technical"`) not enum names (`InterviewStage.TECHNICAL`).
 
-2. **Experience dates are strings.** `Experience.duration` is free-text, not parsed datetime. The semantic matcher estimates 2 years per role as a heuristic (`src/services/semantic_matcher.py`).
+2. **Experience dates are strings.** `Experience.start_date` and `Experience.end_date` are free-text, not parsed datetime. The semantic matcher estimates 2 years per role as a heuristic (`src/services/semantic_matcher.py`).
 
 3. **All date fields in models are `Optional`.** Many are populated inconsistently depending on what the LLM returns during parsing.
 
@@ -320,6 +457,6 @@ Stores generated report JSON documents. The PDF binary is stored separately in t
 
 5. **`_id` vs `id`.** MongoDB uses `_id` (ObjectId). API responses convert to string `id`. The `InterviewSession.id` is a UUID string, not a MongoDB ObjectId.
 
-6. **In-memory session state.** `InterviewOrchestrator._sessions` is the live source of truth. DB writes are fire-and-forget. No read-back from DB during active sessions.
+6. **In-memory session state with MongoDB fallback.** `InterviewOrchestrator._sessions` is the live source of truth during an active session. Every mutation is written through to MongoDB via `SessionRepository`. On `get_session()`, if the session is not in memory (e.g., after server restart), it is loaded from MongoDB on demand. Sessions survive server restarts but are not bulk-reloaded at startup.
 
 7. **Score validation.** `AnswerEvaluator` validates that the LLM's hiring recommendation is consistent with the calculated score. If score >= 7 but LLM says "no_hire", the evaluator overrides to prevent hallucinated decisions. See `src/services/answer_evaluator.py`.

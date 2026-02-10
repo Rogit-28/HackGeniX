@@ -342,6 +342,7 @@ _faster_whisper_provider: Optional[FasterWhisperSTTProvider] = None
 def get_faster_whisper_provider(
     model_name: str = "base",
     device: Optional[str] = None,
+    compute_type: str = "float16",
 ) -> FasterWhisperSTTProvider:
     """
     Get or create the Faster-Whisper STT provider singleton.
@@ -349,6 +350,7 @@ def get_faster_whisper_provider(
     Args:
         model_name: Whisper model size
         device: Device to use
+        compute_type: Compute precision (float16, int8, float32)
         
     Returns:
         FasterWhisperSTTProvider instance
@@ -359,6 +361,7 @@ def get_faster_whisper_provider(
         _faster_whisper_provider = FasterWhisperSTTProvider(
             model_name=model_name,
             device=device,
+            compute_type=compute_type,
         )
     
     return _faster_whisper_provider
@@ -367,6 +370,7 @@ def get_faster_whisper_provider(
 async def get_faster_whisper_provider_async(
     model_name: str = "base",
     device: Optional[str] = None,
+    compute_type: str = "float16",
 ) -> FasterWhisperSTTProvider:
     """Async version of get_faster_whisper_provider."""
-    return get_faster_whisper_provider(model_name, device)
+    return get_faster_whisper_provider(model_name, device, compute_type)

@@ -171,6 +171,69 @@ class QuestionGenerator:
         
         return "\n".join(parts) if parts else "No JD details available"
     
+    def _build_match_context(self, match_analysis: Optional[Dict[str, Any]]) -> str:
+        """Build a match context string from semantic matcher results for prompt injection."""
+        if not match_analysis:
+            return ""
+        
+        lines = []
+        lines.append("=== Candidate-JD Match Analysis ===")
+        
+        # Scores overview
+        overall = match_analysis.get("overall_score")
+        skill_score = match_analysis.get("skill_match_score")
+        exp_score = match_analysis.get("experience_match_score")
+        if overall is not None:
+            lines.append(f"Overall match: {overall:.0f}/100 (skill: {skill_score:.0f}, experience: {exp_score:.0f})")
+        
+        # Matched skills
+        matched = match_analysis.get("matched_skills", [])
+        if matched:
+            lines.append(f"Matched skills: {', '.join(matched)}")
+        
+        # Missing skills
+        missing = match_analysis.get("missing_skills", [])
+        if missing:
+            lines.append(f"Missing skills: {', '.join(missing)}")
+        
+        # Transferable skills
+        transferable = match_analysis.get("transferable_skills", [])
+        if transferable:
+            parts = []
+            for t in transferable:
+                if isinstance(t, dict):
+                    src = t.get("from", t.get("source", "?"))
+                    tgt = t.get("to", t.get("target", "?"))
+                    parts.append(f"{src} -> {tgt}")
+                else:
+                    parts.append(str(t))
+            lines.append(f"Transferable skills: {', '.join(parts)}")
+        
+        # Risk flags
+        risk_flags = match_analysis.get("risk_flags", [])
+        if risk_flags:
+            lines.append(f"Risk flags: {'; '.join(risk_flags)}")
+        
+        # Strengths
+        strengths = match_analysis.get("strengths", [])
+        if strengths:
+            lines.append(f"Strengths: {'; '.join(strengths)}")
+        
+        # Experience quality
+        exp_quality = match_analysis.get("experience_quality")
+        if exp_quality:
+            reasoning = match_analysis.get("experience_quality_reasoning", "")
+            lines.append(f"Experience quality: {exp_quality}" + (f" ({reasoning})" if reasoning else ""))
+        
+        # LLM reasoning (from sidecar)
+        llm_reasoning = match_analysis.get("llm_reasoning")
+        if llm_reasoning:
+            lines.append(f"Fit assessment: {llm_reasoning[:300]}")
+        
+        lines.append("===")
+        
+        return "\n".join(lines)
+    
     def _parse_llm_json_response(self, response: str) -> List[Dict[str, Any]]:
         """Parse JSON from LLM response, handling common formatting issues."""
         # Try to find JSON array in response
@@ -210,6 +273,7 @@ class QuestionGenerator:
         resume: ParsedResume,
         jd: ParsedJobDescription,
         previous_questions: Optional[List[str]] = None,
+        match_analysis: Optional[Dict[str, Any]] = None,
     ) -> List[GeneratedQuestion]:
         """
         Generate interview questions for a specific stage.
@@ -219,6 +283,7 @@ class QuestionGenerator:
             resume: Parsed candidate resume
             jd: Parsed job description
             previous_questions: Previously asked questions to avoid
+            match_analysis: Match analysis dict from semantic matcher (optional)
             
         Returns:
             List of generated questions with metadata
@@ -245,6 +310,7 @@ class QuestionGenerator:
             "technical_requirements": ", ".join(jd.required_skills[:10]),
             "system_experience": "Based on resume experience",
             "complexity_level": "appropriate for candidate experience",
+            "match_context": self._build_match_context(match_analysis),
         }
         
         # Format the prompt
@@ -434,6 +500,7 @@ class QuestionGenerator:
         bank_questions: List[BankQuestion],
         uncovered_skills: List[str],
         previous_questions: Optional[List[str]] = None,
+        match_analysis: Optional[Dict[str, Any]] = None,
     ) -> List[GeneratedQuestion]:
         """
         Generate questions using hybrid approach.
@@ -451,6 +518,7 @@ class QuestionGenerator:
             bank_questions: Pre-selected questions from the bank
             uncovered_skills: Skills not covered by bank (for gap-filling)
             previous_questions: Previously asked questions to avoid
+            match_analysis: Match analysis dict from semantic matcher (optional)
             
         Returns:
             List of generated questions with source tags
@@ -509,7 +577,7 @@ class QuestionGenerator:
             avoid_questions.extend([q.question for q in all_questions])
             
             fallback = await self.generate_questions(
-                fallback_request, resume, jd, avoid_questions
+                fallback_request, resume, jd, avoid_questions, match_analysis
             )
             all_questions.extend(fallback)
         

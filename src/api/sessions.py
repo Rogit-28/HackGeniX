@@ -162,7 +162,7 @@ async def get_progress(
     orchestrator = get_interview_orchestrator()
     
     try:
-        return orchestrator.get_progress(session_id)
+        return await orchestrator.get_progress(session_id)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -178,7 +178,7 @@ async def get_session(
     """Get full interview session details."""
     orchestrator = get_interview_orchestrator()
     
-    session = orchestrator.get_session(session_id)
+    session = await orchestrator.get_session(session_id)
     if not session:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -263,7 +263,7 @@ async def pause_interview(
     orchestrator = get_interview_orchestrator()
     
     try:
-        session = orchestrator.pause_interview(session_id)
+        session = await orchestrator.pause_interview(session_id)
         return {
             "session_id": session_id,
             "status": session.status.value,
@@ -285,7 +285,7 @@ async def resume_interview(
     orchestrator = get_interview_orchestrator()
     
     try:
-        session = orchestrator.resume_interview(session_id)
+        session = await orchestrator.resume_interview(session_id)
         return {
             "session_id": session_id,
             "status": session.status.value,
@@ -301,7 +301,7 @@ async def resume_interview(
 
 @router.get("/", response_model=List[dict])
 async def list_sessions(
-    status: Optional[str] = Query(None, description="Filter by status"),
+    session_status: Optional[str] = Query(None, alias="status", description="Filter by status"),
     limit: int = Query(50, ge=1, le=100),
     user: AuthenticatedUser = Depends(require_permission(Permissions.VIEW_SESSION)),
 ):
@@ -309,16 +309,16 @@ async def list_sessions(
     orchestrator = get_interview_orchestrator()
     
     status_filter = None
-    if status:
+    if session_status:
         try:
-            status_filter = InterviewStatus(status)
+            status_filter = InterviewStatus(session_status)
         except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid status: {status}",
+                detail=f"Invalid status: {session_status}",
             )
     
-    sessions = orchestrator.list_sessions(status=status_filter, limit=limit)
+    sessions = await orchestrator.list_sessions(status=status_filter, limit=limit)
     
     return [
         {
@@ -345,7 +345,7 @@ async def delete_session(
     """Delete an interview session."""
     orchestrator = get_interview_orchestrator()
     
-    if orchestrator.delete_session(session_id):
+    if await orchestrator.delete_session(session_id):
         return {"message": f"Session {session_id} deleted"}
     else:
         raise HTTPException(

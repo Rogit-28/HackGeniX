@@ -23,19 +23,19 @@
 **Tradeoff:** CTranslate2 has occasional compatibility issues with specific CUDA versions. The auto-fallback to CPU handles this gracefully.
 
 ### sentence-transformers for semantic matching
-**Decision:** Use BAAI/bge-large-en-v1.5 via sentence-transformers for resume-JD matching.  
-**Rationale:** State-of-the-art embedding model for semantic similarity. Runs locally, no API calls. The weighted scoring (semantic 35%, skills 40%, experience 25%) in `src/services/semantic_matcher.py` provides a nuanced match beyond simple keyword overlap.  
-**Tradeoff:** Model is ~1.3GB. First load takes several seconds. Stays in memory as a singleton.
+**Decision:** Use BAAI/bge-large-en-v1.5 via sentence-transformers for resume-JD matching, with an optional LLM qualitative sidecar for hybrid scoring.
+**Rationale:** State-of-the-art embedding model for semantic similarity. Runs locally, no API calls. Core-only weights (semantic 35%, skills 40%, experience 25%) provide a nuanced match beyond simple keyword overlap. When the LLM sidecar is enabled (`config/models.yaml` `matching.enabled: true`), hybrid weights apply (semantic 25%, skills 30%, experience 20%, llm_fit 25%) and the LLM generates transferable skills, risk flags, strengths, and experience quality assessments.
+**Tradeoff:** Model is ~1.3GB. First load takes several seconds (mitigated by eager-loading at startup via `asyncio.to_thread`). Stays in memory as a singleton. LLM sidecar adds latency (~2-5s per match).
 
 ### MongoDB Atlas over local MongoDB
 **Decision:** Use MongoDB Atlas (cloud) instead of requiring local MongoDB installation.  
 **Rationale:** Zero local setup for new contributors. Free tier is sufficient for development. Motor (async driver) integrates well with FastAPI.  
 **Tradeoff:** Requires internet connection. DNS resolution issues are common (see `known-issues.md`). Connection string contains credentials.
 
-### In-memory session storage
-**Decision:** `InterviewOrchestrator` stores active sessions in a Python dict (`_sessions`).  
-**Rationale:** Simplicity. No ORM, no cache layer, no serialization overhead. Sessions are written to MongoDB for persistence but reads during active interviews come from memory for speed.  
-**Tradeoff:** Sessions lost on server restart. No multi-process scaling. MongoDB records survive but there is no reload mechanism. This is the most significant architectural limitation for production.
+### Write-through session persistence with in-memory cache
+**Decision:** `InterviewOrchestrator` stores active sessions in a Python dict (`_sessions`) and writes through to MongoDB via `SessionRepository` (`src/services/session_repository.py`) on every mutation. Reads check the in-memory dict first, then fall back to MongoDB.  
+**Rationale:** Low-latency reads during active interviews (dict lookup), with durability for crash recovery and server restarts. `SessionRepository` is a simple async CRUD layer using `mongodb_client.interview_sessions` with upsert-on-save semantics and UUID-as-`_id`.  
+**Tradeoff:** Still single-process — two server instances would have inconsistent in-memory caches. The MongoDB fallback only helps after a restart, not for load balancing. Write amplification: every `submit_answer()` call writes the entire session document.
 
 ### Client-side JWT generation
 **Decision:** The Gradio frontend generates JWT tokens locally using PyJWT.  
@@ -45,7 +45,7 @@
 ### Hybrid question bank (70% curated / 30% LLM)
 **Decision:** Interview questions come from a mix of curated JSONL bank and LLM-generated questions.  
 **Rationale:** Curated questions have known quality and coverage. LLM fills gaps for skills not in the bank. The `HybridQuestionSelector` (`src/services/hybrid_question_selector.py`) auto-detects relevant domains from the JD text, then the `QuestionGenerator` enhances bank questions with LLM personalization.  
-**Tradeoff:** More complex than pure-LLM generation. Bank questions need manual curation per domain. The 70/30 ratio is configurable via `InterviewConfig.bank_ratio`.
+**Tradeoff:** More complex than pure-LLM generation. Bank questions need manual curation per domain. The 70/30 ratio is configurable via `InterviewConfig.bank_question_ratio`.
 
 ### LLM-as-judge with hallucination check
 **Decision:** `AnswerEvaluator` uses the LLM to score answers, then validates the recommendation against the calculated score.  
@@ -64,18 +64,43 @@
 
 ## What Was Tried and Dropped
 
-### OCR fallback (pytesseract)
-**What:** Scanned-PDF support via Tesseract OCR.  
-**Why dropped:** Added complexity, large dependency (Tesseract binary), and the primary use case is machine-readable PDFs. Removed during merge cleanup. Can be re-added if needed.
+*Nothing has been permanently dropped.* All features previously flagged as "removed during merge cleanup" (LLM sidecar, expanded resume models, OCR fallback, certifi SSL) were either restored in Session 1 or confirmed to still be present in the codebase:
 
-### certifi SSL override
-**What:** Patched Python's SSL certificate bundle to fix MongoDB Atlas connection issues on certain systems.  
-**Why dropped:** Fragile workaround. The real fix is ensuring the system's CA certificates are up to date. Removed during merge cleanup.
+- **OCR fallback (pytesseract):** Still active in `src/services/document_processor.py:75-105`. Falls back to Tesseract if pdfplumber returns < 50 chars. Requires PyMuPDF + pytesseract + Tesseract binary.
+- **certifi SSL override:** Still active in `src/core/database.py:9,50`. Motor client uses `tlsCAFile=certifi.where()` for MongoDB Atlas TLS.
+- **LLM qualitative sidecar:** Restored to `src/services/semantic_matcher.py`. Active when `config/models.yaml` `matching.enabled: true`. See "sentence-transformers" decision above.
+- **Expanded resume models (Project, Research):** Restored to `src/models/documents.py`. The 3B LLM's extraction quality varies, but the fields exist and are populated when the LLM cooperates.
 
-### LLM qualitative sidecar in semantic matcher
-**What:** Added an LLM call alongside the embedding-based matching to generate qualitative commentary on resume-JD fit.  
-**Why dropped:** Added latency and LLM cost to every match operation. The semantic matcher's quantitative scores are sufficient for the current use case. Removed during merge cleanup. The code existed in commit `ee8e67d`.
+---
 
-### Expanded resume models (Project, Research, Publication)
-**What:** Richer `ParsedResume` with dedicated fields for projects, research papers, and publications.  
-**Why dropped:** The 3B LLM couldn't reliably extract these fields. Simpler model with `experience` and `certifications` is more robust. Removed during merge cleanup.
+## Decisions Added in Sessions 3-6
+
+### Config-aware STT factory (Session 3)
+**Decision:** Replace hardcoded provider imports with a unified `get_stt_provider()` / `get_stt_provider_async()` factory in `src/providers/stt/__init__.py` that reads `config/models.yaml` for provider, model, device, compute_type, and language.  
+**Rationale:** STT config was scattered: `voice.py` imported one provider, `health.py` imported another, model/device were hardcoded per call-site. The factory centralizes all of this into one singleton with one config source.  
+**Tradeoff:** Adds a level of indirection. The old provider-specific factories are still exported for backward compatibility but should not be used directly.
+
+### NVIDIA DLL PATH registration over os.add_dll_directory (Session 4)
+**Decision:** Prepend `nvidia\cublas\bin` and `nvidia\cudnn\bin` to `os.environ["PATH"]` at the top of `src/main.py` (before any other imports), instead of using Python's `os.add_dll_directory()`.  
+**Rationale:** ctranslate2 loads CUDA kernels at inference time via a mechanism that only checks the system PATH, not Python's DLL directory registry. `os.add_dll_directory()` was tried first and does not work for this case.  
+**Tradeoff:** Pollutes the system PATH for the process. Windows-only code path (guarded by `sys.platform == "win32"`).
+
+### Adversarial evaluation prompts with inline rubric generation (Session 4)
+**Decision:** Rewrite both `ANSWER_EVALUATION_PROMPT` and `BEHAVIORAL_EVALUATION_PROMPT` in `src/services/prompts.py` with adversarial calibration anchors and inline rubric generation. Server-side weighted overall enforcement in `answer_evaluator.py`.  
+**Rationale:** The 3B LLM tends toward score inflation (clustering around 70-80). Adversarial anchors (explicit examples of what a 30, 50, 70, 90 looks like) and server-side recomputation of overall scores from components reduce this bias.  
+**Tradeoff:** Longer prompts consume more context window. Temperature lowered from 0.3 to 0.2, max_tokens raised from 1024 to 1536 to accommodate rubric output.
+
+### MongoDB write-through session persistence (Session 5)
+**Decision:** Add `SessionRepository` (`src/services/session_repository.py`) for async MongoDB CRUD, and wire it into `InterviewOrchestrator` as a write-through layer with fallback reads.  
+**Rationale:** Sessions were lost on server restart. Write-through preserves low-latency in-memory reads for active interviews while ensuring all mutations are durable.  
+**Tradeoff:** See "Write-through session persistence" decision above. Every mutation writes the full session document.
+
+### Match-aware question generation (Session 5)
+**Decision:** Run `SemanticMatcher.match()` at interview start, store the result on `session.match_analysis`, and thread it into all 4 stage question generation prompts via `{match_context}`.  
+**Rationale:** Generic questions waste interview time. Match analysis tells the LLM exactly which skills are matched/missing/transferable, what risk flags exist, and the candidate's experience quality, allowing stage-specific targeting (e.g., screening probes missing skills, technical tests matched skills for depth).  
+**Tradeoff:** Adds ~3-10s to interview start (embedding + optional LLM sidecar). If the matcher fails, interview proceeds without match context (graceful degradation).
+
+### asyncio.to_thread for blocking ML inference (Session 6)
+**Decision:** Wrap SentenceTransformer model load and embedding inference in `asyncio.to_thread()` in `src/services/semantic_matcher.py`, and eager-load the model at server startup in `src/main.py:lifespan()`.  
+**Rationale:** The embedding model load (~3-5s) and inference block the async event loop, causing all concurrent requests to time out. `asyncio.to_thread()` offloads to a thread pool. Eager-loading at startup means the first interview request doesn't pay the model load cost.  
+**Tradeoff:** Thread pool adds slight overhead. The model is still loaded once as a singleton. Eager-load adds ~10-30s to server startup time.

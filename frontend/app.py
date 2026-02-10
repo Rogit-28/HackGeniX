@@ -413,7 +413,7 @@ def submit_text_answer(answer: str) -> Tuple[str, str, str]:
         feedback_parts.append("Areas to improve:\n" + "\n".join(f"  - {i}" for i in improvements))
     feedback = "\n\n".join(feedback_parts) if feedback_parts else "No feedback"
     
-    eval_text = f"Score: {score}/10\n\n{feedback}"
+    eval_text = f"Score: {score}/100\n\n{feedback}"
     
     # Refresh to get next question
     session_info, question = refresh_session()
@@ -432,30 +432,50 @@ def submit_audio_answer(audio) -> Tuple[str, str, str]:
     if audio is None:
         return "Error: No audio recorded", "", ""
     
-    # Read audio file and convert to base64
-    sample_rate, audio_data = audio
-    
-    # Save to temp file as WAV
-    import wave
-    import numpy as np
-    
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-        temp_path = f.name
+    try:
+        # Read audio file and convert to base64
+        sample_rate, audio_data = audio
+        
+        # Save to temp file as WAV
+        import wave
+        import numpy as np
+        
+        audio_array = np.array(audio_data)
+        
+        # Handle stereo -> mono (Gradio mic may return (N,2) or (N,) )
+        if audio_array.ndim > 1:
+            # Average channels to produce mono
+            audio_array = audio_array.mean(axis=1)
+        
+        # Gradio may deliver float32 in [-1.0, 1.0]; scale to int16 range
+        if audio_array.dtype in (np.float32, np.float64):
+            audio_array = np.clip(audio_array, -1.0, 1.0)
+            audio_array = (audio_array * 32767).astype(np.int16)
+        else:
+            audio_array = audio_array.astype(np.int16)
+        
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            temp_path = f.name
+        
         with wave.open(temp_path, 'wb') as wav_file:
             wav_file.setnchannels(1)
             wav_file.setsampwidth(2)
             wav_file.setframerate(sample_rate)
-            audio_array = np.array(audio_data, dtype=np.int16)
             wav_file.writeframes(audio_array.tobytes())
         
         with open(temp_path, 'rb') as f:
             audio_bytes = f.read()
         
         os.unlink(temp_path)
-    
-    audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-    
-    result = run_async(api_client.submit_answer(current_session_id, answer_audio_base64=audio_base64))
+        
+        if len(audio_bytes) < 100:
+            return "Error: Audio recording too short or empty", "", ""
+        
+        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+        
+        result = run_async(api_client.submit_answer(current_session_id, answer_audio_base64=audio_base64))
+    except Exception as e:
+        return f"Error submitting audio: {e}", "", ""
     
     if "error" in result:
         return f"Error: {result['error']}", "", ""
@@ -473,7 +493,7 @@ def submit_audio_answer(audio) -> Tuple[str, str, str]:
         feedback_parts.append("Areas to improve:\n" + "\n".join(f"  - {i}" for i in improvements))
     feedback = "\n\n".join(feedback_parts) if feedback_parts else "No feedback"
     
-    eval_text = f"Score: {score}/10\n\n{feedback}"
+    eval_text = f"Score: {score}/100\n\n{feedback}"
     
     session_info, question = refresh_session()
     

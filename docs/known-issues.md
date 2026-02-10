@@ -2,31 +2,43 @@
 
 ## Active Bugs
 
-### `/match` endpoint returns placeholder data
-**Location:** `src/api/documents.py` -- `POST /api/v1/documents/match`  
-**Impact:** Resume-JD matching via the API always returns hardcoded scores.  
-**Root cause:** The `SemanticMatcher` service exists and works (`src/services/semantic_matcher.py`) but is not wired into this endpoint. The route handler returns a placeholder `MatchResult`.  
-**Fix:** Fetch resume and JD from MongoDB, call `SemanticMatcher.match()`, return real scores.
+### Resume parsing silent-failure / cache-poisoning
+**Location:** `src/services/document_processor.py` -- `parse_resume_with_llm()`
+**Impact:** If the LLM returns unparseable JSON, the function silently returns a near-empty `ParsedResume` (just `raw_text`). This result is then cached by the SHA256 cache layer, meaning subsequent uploads of the same file will always return the bad parse without retrying the LLM.
+**Fix:** Raise an exception on parse failure instead of returning an empty model. Add cache invalidation or skip caching on failure.
 
-### Sessions use mock data instead of MongoDB
-**Location:** `src/api/sessions.py` -- `POST /api/v1/sessions/start`  
-**Impact:** Starting an interview session does not fetch the actual resume/JD from MongoDB. It uses `_mock_resumes` and `_mock_job_descriptions` dicts hardcoded in the file.  
-**Fix:** Replace mock lookups with MongoDB queries using `mongodb_client.resumes.find_one()` and `mongodb_client.job_descriptions.find_one()`.
+### cuBLAS/cuDNN fix not yet verified in production
+**Location:** `src/main.py:6-26` -- NVIDIA DLL PATH registration
+**Impact:** The PATH-based fix for `cublas64_12.dll` / `cudnn64_9.dll` has been verified in standalone Python tests but has NOT been confirmed working in the running FastAPI server. If it fails, faster-whisper will crash on CUDA inference and fall back would need manual intervention.
+**Status:** Awaiting user verification.
 
-### In-memory session storage (data loss on restart)
-**Location:** `src/services/interview_orchestrator.py` -- `_sessions: Dict[str, InterviewSession]`  
-**Impact:** Active interview sessions live only in the orchestrator's memory. If the backend restarts, all in-progress sessions are lost. MongoDB records exist but there is no recovery/reload mechanism.  
-**Fix:** Add a startup routine that loads active sessions from MongoDB, or switch to DB-first reads.
+### `models.yaml` TTS config mismatch
+**Location:** `config/models.yaml:47-53`
+**Impact:** The config file specifies `provider: "coqui-xtts"` for TTS, but the actual code uses `pyttsx3` (system TTS). The TTS config in `models.yaml` is not read by the TTS provider -- it's effectively ignored.
+**Fix:** Either update `models.yaml` to reflect the actual pyttsx3 provider, or implement config-aware TTS factory similar to the STT factory.
+
+## Resolved Bugs
+
+### ~~`/match` endpoint returns placeholder data~~
+**Resolved.** The `POST /api/v1/documents/match` endpoint now fetches real resume/JD from MongoDB and calls `SemanticMatcher.match()` with full hybrid scoring.
+
+### ~~Sessions use mock data instead of MongoDB~~
+**Resolved.** `start_interview()` in `src/api/sessions.py` now fetches real resume/JD from MongoDB using `mongodb_client.resumes.find_one()` and `mongodb_client.job_descriptions.find_one()`.
+
+### ~~In-memory session storage (data loss on restart)~~
+**Partially resolved.** `SessionRepository` (`src/services/session_repository.py`) now provides MongoDB write-through persistence. All session mutations are saved to MongoDB. `get_session()` falls back to loading from MongoDB if not in memory. Sessions survive server restarts. However, there is no bulk reload at startup -- sessions are loaded on-demand.
 
 ## Limitations
 
-### STT accuracy with small Whisper models
-The default STT model is `base` (74M params). Accuracy is limited for:
-- Technical jargon (framework names, acronyms)
-- Non-native English speakers
-- Noisy environments
+### STT accuracy
+The configured STT model is `large-v3` on CUDA with `int8` compute type (see `config/models.yaml`). This provides good accuracy but is a large model (~1.5GB). Accuracy is still limited for:
+- Highly specialized technical jargon
+- Non-native English speakers in noisy environments
 
-The `transcribe_with_interview_context()` method mitigates this by passing technical term prompts to Whisper, but results are still approximate. Upgrading to `small` or `medium` model improves accuracy at the cost of speed and memory.
+The `transcribe_with_interview_context()` method mitigates this by passing technical term prompts to Whisper.
+
+### PyTorch is CPU-only
+`torch.cuda.is_available()` returns `False` because the installed PyTorch is the CPU-only build. This means `sentence-transformers` (BAAI/bge-large-en-v1.5) runs embedding inference on CPU, not GPU. faster-whisper uses CTranslate2's own CUDA backend (separate from PyTorch) so STT still runs on GPU. Installing the CUDA PyTorch build would accelerate embedding inference but would add ~2GB to the venv.
 
 ### TTS quality
 pyttsx3 uses the system TTS engine (SAPI5 on Windows, espeak on Linux). Voice quality is robotic compared to neural TTS. This is a conscious tradeoff -- see `decisions.md`.
@@ -66,11 +78,5 @@ The SHA256-based cache in `.cache/parsed_documents/` grows unbounded. No TTL, no
 ### DNS flakiness with MongoDB Atlas
 MongoDB Atlas connections occasionally fail with DNS resolution errors, especially on networks with restrictive DNS. The `MONGODB_URI` uses SRV records (`mongodb+srv://`) which require DNS lookups. No retry logic on connection failure.
 
-## Removed Features (from merge cleanup)
-
-These features existed in earlier commits but were removed during the merge cleanup (`fcae581`):
-
-- **LLM qualitative sidecar** in semantic matcher -- added hybrid LLM+embedding scoring, removed because the merge branch didn't include it
-- **OCR fallback** for scanned PDFs -- used pytesseract, removed in merge
-- **certifi SSL override** -- patched SSL cert bundle for MongoDB Atlas connection issues, removed in merge
-- **Expanded resume models** (Project, Research, Publication) -- richer resume parsing, removed in merge
+### red_flags / green_flags not wired through data model
+The LLM match assessment can return `risk_flags` and `strengths`, but these are stored as flat lists on `MatchResult`. There is no structured data model for individual flags (severity, category, evidence) and they are not surfaced in the frontend or PDF reports.

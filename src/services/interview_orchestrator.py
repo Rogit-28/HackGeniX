@@ -53,6 +53,8 @@ from src.services.prompts import (
     InterviewStage as PromptStage,
     QuestionDifficulty,
 )
+from src.services.session_repository import get_session_repository
+from src.services.semantic_matcher import get_semantic_matcher
 
 logger = logging.getLogger(__name__)
 
@@ -103,12 +105,18 @@ class InterviewOrchestrator:
         self._answer_evaluator = answer_evaluator
         self._hybrid_selector = hybrid_selector
         
-        # In-memory session storage (replace with DB in production)
+        # In-memory cache backed by MongoDB persistence
         self._sessions: Dict[str, InterviewSession] = {}
+        self._repo = get_session_repository()
         
         # Voice providers (lazy loaded)
         self._stt_provider = None
         self._tts_provider = None
+    
+    async def _save_session(self, session: InterviewSession) -> None:
+        """Persist session to MongoDB (write-through cache)."""
+        self._sessions[session.id] = session
+        await self._repo.save(session)
     
     @property
     def question_generator(self) -> QuestionGenerator:
@@ -131,8 +139,8 @@ class InterviewOrchestrator:
     async def _get_stt_provider(self):
         """Get STT provider (lazy load)."""
         if self._stt_provider is None:
-            from src.providers.stt import get_faster_whisper_provider_async
-            self._stt_provider = await get_faster_whisper_provider_async()
+            from src.providers.stt import get_stt_provider_async
+            self._stt_provider = await get_stt_provider_async()
         return self._stt_provider
     
     async def _get_tts_provider(self):
@@ -175,6 +183,7 @@ class InterviewOrchestrator:
         jd: ParsedJobDescription,
         config: InterviewConfig,
         previous_questions: List[str] = None,
+        match_analysis: Optional[Dict[str, Any]] = None,
     ) -> List[InterviewQuestion]:
         """Generate questions for a specific stage."""
         num_questions = self._get_stage_question_count(config, stage)
@@ -218,6 +227,7 @@ class InterviewOrchestrator:
                     jd=jd,
                     config=config,
                     previous_questions=previous_questions,
+                    match_analysis=match_analysis,
                 )
             else:
                 # Pure LLM generation (original behavior)
@@ -226,6 +236,7 @@ class InterviewOrchestrator:
                     resume=resume,
                     jd=jd,
                     previous_questions=previous_questions,
+                    match_analysis=match_analysis,
                 )
             
             # Convert to InterviewQuestion models
@@ -260,6 +271,7 @@ class InterviewOrchestrator:
         jd: ParsedJobDescription,
         config: InterviewConfig,
         previous_questions: Optional[List[str]] = None,
+        match_analysis: Optional[Dict[str, Any]] = None,
     ) -> List[GeneratedQuestion]:
         """
         Generate questions using hybrid mode (Phase 6.5).
@@ -301,6 +313,7 @@ class InterviewOrchestrator:
             bank_questions=bank_questions,
             uncovered_skills=uncovered_skills,
             previous_questions=previous_questions,
+            match_analysis=match_analysis,
         )
     
     def _get_fallback_questions(self, stage: InterviewStage, count: int) -> List[InterviewQuestion]:
@@ -398,11 +411,34 @@ class InterviewOrchestrator:
         
         # Generate initial questions for first stage (screening)
         logger.info(f"Generating screening questions for session {session_id}")
+        
+        # Run match analysis before question generation
+        match_analysis = None
+        try:
+            matcher = get_semantic_matcher()
+            match_result = await matcher.match(
+                resume=resume,
+                job_description=jd,
+                resume_id=resume_id,
+                job_description_id=jd_id,
+            )
+            match_analysis = match_result.model_dump()
+            session.match_analysis = match_analysis
+            logger.info(
+                f"Match analysis complete for session {session_id}: "
+                f"overall={match_result.overall_score:.1f}, "
+                f"matched_skills={len(match_result.matched_skills)}, "
+                f"missing_skills={len(match_result.missing_skills)}"
+            )
+        except Exception as e:
+            logger.warning(f"Match analysis failed for session {session_id}, proceeding without: {e}")
+        
         screening_questions = await self._generate_stage_questions(
             stage=InterviewStage.SCREENING,
             resume=resume,
             jd=jd,
             config=config,
+            match_analysis=match_analysis,
         )
         session.questions.extend(screening_questions)
         
@@ -415,6 +451,7 @@ class InterviewOrchestrator:
             jd=jd,
             config=config,
             previous_questions=[q.question_text for q in screening_questions],
+            match_analysis=match_analysis,
         )
         session.questions.extend(technical_questions)
         
@@ -426,6 +463,7 @@ class InterviewOrchestrator:
             jd=jd,
             config=config,
             previous_questions=[q.question_text for q in session.questions],
+            match_analysis=match_analysis,
         )
         session.questions.extend(behavioral_questions)
         
@@ -438,6 +476,7 @@ class InterviewOrchestrator:
                 jd=jd,
                 config=config,
                 previous_questions=[q.question_text for q in session.questions],
+                match_analysis=match_analysis,
             )
             session.questions.extend(sd_questions)
         
@@ -447,6 +486,7 @@ class InterviewOrchestrator:
             resume=resume,
             jd=jd,
             config=config,
+            match_analysis=match_analysis,
         )
         session.questions.extend(wrap_up)
         
@@ -460,8 +500,8 @@ class InterviewOrchestrator:
         session.started_at = datetime.utcnow()
         session.last_activity_at = datetime.utcnow()
         
-        # Store session
-        self._sessions[session_id] = session
+        # Store session (in-memory cache + MongoDB)
+        await self._save_session(session)
         
         logger.info(f"Interview session {session_id} started with {len(session.questions)} questions")
         
@@ -517,7 +557,13 @@ class InterviewOrchestrator:
                 audio_path = f.name
             
             # Transcribe
-            result = await stt.transcribe(audio_path, context=context)
+            if context:
+                result = await stt.transcribe_with_interview_context(
+                    audio_data=audio_path,
+                    technical_terms=context,
+                )
+            else:
+                result = await stt.transcribe(audio_data=audio_path)
             
             # Clean up temp file
             Path(audio_path).unlink(missing_ok=True)
@@ -528,9 +574,14 @@ class InterviewOrchestrator:
             logger.error(f"Failed to transcribe audio: {e}")
             raise ValueError(f"Audio transcription failed: {e}")
     
-    def get_session(self, session_id: str) -> Optional[InterviewSession]:
-        """Get an interview session by ID."""
-        return self._sessions.get(session_id)
+    async def get_session(self, session_id: str) -> Optional[InterviewSession]:
+        """Get an interview session by ID (in-memory cache, MongoDB fallback)."""
+        session = self._sessions.get(session_id)
+        if session is None:
+            session = await self._repo.load(session_id)
+            if session is not None:
+                self._sessions[session_id] = session
+        return session
     
     def _get_next_stage(self, current_stage: InterviewStage) -> Optional[InterviewStage]:
         """Get the next stage in the interview flow."""
@@ -583,7 +634,7 @@ class InterviewOrchestrator:
         Returns:
             SubmitAnswerResponse with evaluation and next question
         """
-        session = self.get_session(session_id)
+        session = await self.get_session(session_id)
         if not session:
             raise ValueError(f"Session not found: {session_id}")
         
@@ -697,6 +748,9 @@ class InterviewOrchestrator:
             session.completed_at = datetime.utcnow()
             logger.info(f"Session {session_id}: Interview completed")
         
+        # Persist session state after all mutations
+        await self._save_session(session)
+        
         # Calculate progress
         total_questions = len(session.questions)
         answered = len(session.answers)
@@ -723,9 +777,9 @@ class InterviewOrchestrator:
         
         return response
     
-    def get_progress(self, session_id: str) -> InterviewProgressResponse:
+    async def get_progress(self, session_id: str) -> InterviewProgressResponse:
         """Get current interview progress."""
-        session = self.get_session(session_id)
+        session = await self.get_session(session_id)
         if not session:
             raise ValueError(f"Session not found: {session_id}")
         
@@ -763,7 +817,7 @@ class InterviewOrchestrator:
         Returns:
             Complete interview report
         """
-        session = self.get_session(session_id)
+        session = await self.get_session(session_id)
         if not session:
             raise ValueError(f"Session not found: {session_id}")
         
@@ -778,6 +832,9 @@ class InterviewOrchestrator:
         if reason:
             session.error_message = f"Ended early: {reason}"
         
+        # Persist status change
+        await self._save_session(session)
+        
         return await self.generate_report(session_id)
     
     async def generate_report(self, session_id: str) -> InterviewReportResponse:
@@ -790,7 +847,7 @@ class InterviewOrchestrator:
         Returns:
             Complete interview report
         """
-        session = self.get_session(session_id)
+        session = await self.get_session(session_id)
         if not session:
             raise ValueError(f"Session not found: {session_id}")
         
@@ -883,7 +940,7 @@ class InterviewOrchestrator:
         )
         from src.services.pdf_generator import PDFReportGenerator
         
-        session = self.get_session(session_id)
+        session = await self.get_session(session_id)
         if not session:
             raise ValueError(f"Session not found: {session_id}")
         
@@ -1006,55 +1063,51 @@ class InterviewOrchestrator:
         else:
             return generator.generate()
     
-    def pause_interview(self, session_id: str) -> InterviewSession:
+    async def pause_interview(self, session_id: str) -> InterviewSession:
         """Pause an interview session."""
-        session = self.get_session(session_id)
+        session = await self.get_session(session_id)
         if not session:
             raise ValueError(f"Session not found: {session_id}")
         
         if session.status == InterviewStatus.IN_PROGRESS:
             session.status = InterviewStatus.PAUSED
             session.last_activity_at = datetime.utcnow()
+            await self._save_session(session)
             logger.info(f"Session {session_id} paused")
         
         return session
     
-    def resume_interview(self, session_id: str) -> InterviewSession:
+    async def resume_interview(self, session_id: str) -> InterviewSession:
         """Resume a paused interview session."""
-        session = self.get_session(session_id)
+        session = await self.get_session(session_id)
         if not session:
             raise ValueError(f"Session not found: {session_id}")
         
         if session.status == InterviewStatus.PAUSED:
             session.status = InterviewStatus.IN_PROGRESS
             session.last_activity_at = datetime.utcnow()
+            await self._save_session(session)
             logger.info(f"Session {session_id} resumed")
         
         return session
     
-    def list_sessions(
+    async def list_sessions(
         self,
         status: Optional[InterviewStatus] = None,
         limit: int = 50,
     ) -> List[InterviewSession]:
         """List interview sessions, optionally filtered by status."""
-        sessions = list(self._sessions.values())
-        
-        if status:
-            sessions = [s for s in sessions if s.status == status]
-        
-        # Sort by last activity (most recent first)
-        sessions.sort(key=lambda s: s.last_activity_at, reverse=True)
-        
-        return sessions[:limit]
+        return await self._repo.list(status=status, limit=limit)
     
-    def delete_session(self, session_id: str) -> bool:
+    async def delete_session(self, session_id: str) -> bool:
         """Delete an interview session."""
-        if session_id in self._sessions:
-            del self._sessions[session_id]
+        # Remove from in-memory cache
+        self._sessions.pop(session_id, None)
+        # Remove from MongoDB
+        deleted = await self._repo.delete(session_id)
+        if deleted:
             logger.info(f"Session {session_id} deleted")
-            return True
-        return False
+        return deleted
 
 
 # Global instance (lazy loaded)

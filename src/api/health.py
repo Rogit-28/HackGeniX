@@ -101,8 +101,8 @@ async def health_detailed():
 
     # --- STT (faster-whisper) ---
     try:
-        from src.providers.stt import get_faster_whisper_provider_async
-        stt = await get_faster_whisper_provider_async()
+        from src.providers.stt import get_stt_provider_async
+        stt = await get_stt_provider_async()
         info = stt.get_model_info()
         components["stt"] = {
             "status": "healthy",

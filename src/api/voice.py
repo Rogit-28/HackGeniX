@@ -19,7 +19,7 @@ from src.core.auth import get_current_user, require_permission, require_role
 from src.core.permissions import Permissions
 from src.models.auth import AuthenticatedUser, UserRole
 from src.providers.stt import (
-    get_whisper_provider_async,
+    get_stt_provider_async,
     TranscriptionResult,
     WhisperModel,
 )
@@ -120,7 +120,7 @@ async def transcribe_audio(
             raise HTTPException(status_code=400, detail="Empty audio file")
         
         # Get STT provider
-        stt = await get_whisper_provider_async()
+        stt = await get_stt_provider_async()
         
         # Transcribe
         if context:
@@ -176,7 +176,7 @@ async def transcribe_interview_audio(
             terms = [t.strip() for t in technical_terms.split(",") if t.strip()]
         
         # Get STT provider
-        stt = await get_whisper_provider_async()
+        stt = await get_stt_provider_async()
         
         result = await stt.transcribe_with_interview_context(
             audio_data=audio_bytes,
@@ -210,7 +210,7 @@ async def detect_language(
     try:
         audio_bytes = await audio.read()
         
-        stt = await get_whisper_provider_async()
+        stt = await get_stt_provider_async()
         language, confidence = await stt.detect_language(audio_bytes)
         
         return LanguageDetectResponse(
@@ -229,7 +229,7 @@ async def get_stt_info(
 ):
     """Get information about the STT provider."""
     try:
-        stt = await get_whisper_provider_async()
+        stt = await get_stt_provider_async()
         info = stt.get_model_info()
         
         return STTInfoResponse(
@@ -410,7 +410,7 @@ async def voice_health_check():
     
     # Check STT
     try:
-        stt = await get_whisper_provider_async()
+        stt = await get_stt_provider_async()
         info = stt.get_model_info()
         status["stt"] = {
             "status": "healthy",

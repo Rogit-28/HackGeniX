@@ -50,8 +50,7 @@ Open a **new terminal** and run:
 
 ```powershell
 cd C:\Users\rogit\dev\HackGeniX
-.venv\Scripts\python.exe frontend/app.py
-```
+x```
 
 **Wait for startup** (approximately 10-15 seconds). You should see:
 ```

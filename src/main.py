@@ -3,8 +3,31 @@ AI Interviewer System - Main FastAPI Application
 
 This is the entry point for the interview system API.
 """
+import os
+import sys
+
+# Register NVIDIA pip-package DLL directories so ctranslate2 (faster-whisper)
+# can find cublas64_12.dll, cudnn, etc. on Windows.  Must happen before any
+# ctranslate2 / faster_whisper import.
+# NOTE: os.add_dll_directory() is NOT enough — ctranslate2 loads CUDA kernels
+# at inference time via a path that only checks the system PATH.
+if sys.platform == "win32":
+    _site_packages = os.path.join(os.path.dirname(sys.executable), "..", "Lib", "site-packages")
+    _nvidia_dirs = [
+        os.path.join(_site_packages, "nvidia", "cublas", "bin"),
+        os.path.join(_site_packages, "nvidia", "cudnn", "bin"),
+    ]
+    _prepend = []
+    for _d in _nvidia_dirs:
+        _d = os.path.normpath(_d)
+        if os.path.isdir(_d):
+            _prepend.append(_d)
+    if _prepend:
+        os.environ["PATH"] = os.pathsep.join(_prepend) + os.pathsep + os.environ.get("PATH", "")
+
 import logging
 from contextlib import asynccontextmanager
+import asyncio
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,6 +64,14 @@ async def lifespan(app: FastAPI):
     # Initialize S3/MinIO storage (with local fallback)
     await storage_client.initialize()
     logger.info(f"Storage initialized (backend: {storage_client.storage_type})")
+    
+    # Eager-load embedding model so first request isn't penalized.
+    # SentenceTransformer.__init__ is CPU/GPU-bound (~10-30s), so run in
+    # a thread to keep the event loop responsive during startup.
+    from src.services.semantic_matcher import get_semantic_matcher
+    logger.info("Loading embedding model (this may take a moment)...")
+    await asyncio.to_thread(get_semantic_matcher)
+    logger.info("Embedding model ready")
     
     yield
     

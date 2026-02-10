@@ -10,7 +10,7 @@ All endpoints are served from `http://localhost:8000`. Auth-required endpoints e
 **Auth:** None  
 **Response:**
 ```json
-{ "status": "healthy", "version": "1.0.0", "timestamp": "ISO8601" }
+{ "status": "healthy", "version": "0.1.0", "timestamp": "ISO8601" }
 ```
 
 ### `GET /health/detailed`
@@ -19,7 +19,7 @@ All endpoints are served from `http://localhost:8000`. Auth-required endpoints e
 ```json
 {
   "status": "healthy" | "degraded",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "timestamp": "ISO8601",
   "components": {
     "mongodb": { "status": "healthy", "details": { "resumes_count": 5, ... } },
@@ -80,8 +80,9 @@ Returns `"degraded"` if any component fails. Each component is probed independen
 ### `POST /api/v1/documents/match`
 **Auth:** Required  
 **Body:** `{ resume_id, jd_id }`  
-**Response:** `MatchResult` (placeholder)  
-**Notes:** **Currently returns placeholder data.** The `SemanticMatcher` exists but is not wired into this endpoint yet. See `known-issues.md`.
+**Query params:** `use_llm` (bool, default `true`) -- set to `false` for pure algorithmic matching  
+**Response:** `MatchResult` -- includes overall/skill/experience/semantic scores, matched/missing skills, recommendations, and LLM sidecar fields (fit_score, reasoning, transferable_skills, risk_flags, strengths) when hybrid mode is enabled.  
+**Notes:** Fetches resume and JD from MongoDB, calls `SemanticMatcher.match()`, returns real scores. Both documents must be in `parsed` status.
 
 ---
 
@@ -91,7 +92,7 @@ Returns `"degraded"` if any component fails. Each component is probed independen
 **Auth:** Required  
 **Body:** `StartInterviewRequest` -- `{ resume_id, jd_id, config?: InterviewConfig }`  
 **Response:** `StartInterviewResponse` -- `{ session_id, status, current_question, total_questions }`  
-**Notes:** Creates an `InterviewSession`, generates all questions upfront (hybrid bank+LLM). **Currently uses mock resume/JD data** instead of fetching from MongoDB -- see `known-issues.md`.
+**Notes:** Creates an `InterviewSession`, fetches real resume/JD from MongoDB, runs `SemanticMatcher.match()` for match analysis, generates all questions upfront (hybrid bank+LLM with match context).
 
 ### `POST /api/v1/sessions/{session_id}/answer`
 **Auth:** Required  

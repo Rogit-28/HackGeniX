@@ -52,31 +52,32 @@
 
 | Layer | File | Responsibility |
 |-------|------|----------------|
-| **Entry** | `src/main.py:82-88` | Mounts all routers, CORS, lifespan startup/shutdown |
+| **Entry** | `src/main.py:112-119` | NVIDIA CUDA DLL registration, eager-load embedding model, mounts all routers, CORS, lifespan startup/shutdown |
 | **Middleware** | `src/api/middleware.py` | JWT auth on non-public routes, injects `AuthenticatedUser` |
 | **Auth** | `src/core/auth.py` | JWT encode/decode, `get_current_user`, `require_role()` |
 | **Permissions** | `src/core/permissions.py` | Role-permission matrix, `require_permission()`, `require_session_access()` |
 | **Config** | `src/core/config.py` | Pydantic-settings `Settings` from `.env`, `load_model_config()` from `config/models.yaml` |
 | **Database** | `src/core/database.py` | Motor async client, collection accessors (`resumes`, `job_descriptions`, `interview_sessions`) |
 | **Storage** | `src/core/storage.py` | S3/MinIO with local-filesystem fallback at `./storage/` |
-| **Orchestrator** | `src/services/interview_orchestrator.py` | Central session controller -- start, submit answer, generate report, pause/resume |
+| **Orchestrator** | `src/services/interview_orchestrator.py` | Central session controller -- start, submit answer, generate report, pause/resume; MongoDB write-through persistence via SessionRepository |
 | **Doc Processor** | `src/services/document_processor.py` | PDF (pdfplumber) + DOCX (python-docx) text extraction, LLM-based field parsing |
 | **Question Gen** | `src/services/question_generator.py` | Pure-LLM and hybrid question generation |
 | **Answer Eval** | `src/services/answer_evaluator.py` | LLM-as-judge scoring, hallucination check, report aggregation |
-| **Semantic Match** | `src/services/semantic_matcher.py` | sentence-transformers (BAAI/bge-large-en-v1.5) resume-JD matching |
+| **Semantic Match** | `src/services/semantic_matcher.py` | sentence-transformers (BAAI/bge-large-en-v1.5) resume-JD matching with LLM qualitative sidecar (hybrid mode); embedding inference offloaded via `asyncio.to_thread` |
 | **Question Bank** | `src/services/question_bank.py` | Loads/indexes JSONL files from `questionBank/domains/` |
 | **Hybrid Selector** | `src/services/hybrid_question_selector.py` | Picks bank questions + identifies uncovered skills for LLM gap-fill |
 | **PDF Generator** | `src/services/pdf_generator.py` | ReportLab single-page scrollable PDF report |
-| **Prompts** | `src/services/prompts.py` | All LLM prompt templates (resume parsing, question gen, evaluation, etc.) |
+| **Session Repo** | `src/services/session_repository.py` | Async MongoDB CRUD for interview sessions (save/load/delete/list) |
+| **Prompts** | `src/services/prompts.py` | All LLM prompt templates (resume parsing, question gen, evaluation, match assessment) |
 | **LLM Factory** | `src/providers/llm/factory.py` | Creates Ollama/vLLM/OpenAI-compatible providers from `models.yaml` |
-| **STT** | `src/providers/stt/faster_whisper_provider.py` | CTranslate2 Whisper, auto CUDA/CPU fallback |
+| **STT** | `src/providers/stt/__init__.py`, `faster_whisper_provider.py` | Unified config-aware STT factory (`get_stt_provider_async`); CTranslate2 Whisper, auto CUDA/CPU fallback |
 | **TTS** | `src/providers/tts/pyttsx3_provider.py` | System TTS via pyttsx3, runs in thread pool executor |
 | **Frontend** | `frontend/app.py` | Gradio tabbed UI (Login, Documents, Interviews, Live Session, Reports, Admin) |
 | **API Client** | `frontend/api_client.py` | HTTP client + client-side JWT |
 
 ## Router Mounting
 
-All routers are mounted in `src/main.py:82-88`:
+All routers are mounted in `src/main.py:112-119`:
 
 ```python
 app.include_router(health.router)                                    # /health, /health/detailed
@@ -110,15 +111,19 @@ POST /api/v1/documents/resumes  (multipart file)
 
 ```
 POST /api/v1/sessions/start  {resume_id, jd_id, config}
+  -> Fetch real resume/JD from MongoDB
   -> InterviewOrchestrator.start_interview()
+       -> SemanticMatcher.match(resume, jd)  (embedding via asyncio.to_thread + optional LLM sidecar)
+            -> Store match_analysis on session
        -> HybridQuestionSelector.select_questions()
             -> QuestionBankService: load JSONL, filter by domain/stage/difficulty
             -> Score by skill overlap with JD+resume, enforce category diversity
             -> Return (selected_bank_questions, uncovered_skills)
-       -> QuestionGenerator.generate_questions_hybrid()
+       -> QuestionGenerator.generate_questions_hybrid(match_analysis=...)
             -> Enhance bank questions with LLM (batch or single)
             -> Generate gap-fill questions for uncovered skills
-       -> Create InterviewSession (in-memory _sessions dict + MongoDB)
+            -> match_context injected into all 4 stage prompts
+       -> Create InterviewSession (in-memory _sessions dict + MongoDB via SessionRepository)
        -> Return first question
 
 POST /api/v1/sessions/{id}/answer  {question_id, answer_text}
@@ -190,20 +195,21 @@ All services use global singletons via `get_*()` factory functions, lazily initi
 - `get_answer_evaluator()` -- `src/services/answer_evaluator.py`
 - `get_document_processor()` -- `src/services/document_processor.py`
 - `get_semantic_matcher()` -- `src/services/semantic_matcher.py`
+- `get_session_repository()` -- `src/services/session_repository.py`
 - `get_question_bank_service()` -- `src/services/question_bank.py`
 - `get_hybrid_question_selector()` -- `src/services/hybrid_question_selector.py`
 - `get_llm_provider()` (async) / `get_llm_provider_sync()` -- `src/providers/llm/factory.py`
-- `get_faster_whisper_provider_async()` -- `src/providers/stt/faster_whisper_provider.py`
+- `get_stt_provider()` / `get_stt_provider_async()` -- `src/providers/stt/__init__.py` (unified config-aware factory; preferred over provider-specific factories)
 - `get_tts_provider_async()` -- `src/providers/tts/pyttsx3_provider.py`
 
-**Gotcha:** Singletons are module-level globals. Server restart is the only way to force re-initialization. Hot reloading (uvicorn `--reload`) can cause stale references or duplicate instances.
+**Gotcha:** Singletons are module-level globals. Server restart is the only way to force re-initialization. Hot reloading (uvicorn `--reload`) can cause stale references or duplicate instances. The embedding model (`SemanticMatcher`) is eagerly loaded at startup via `asyncio.to_thread(get_semantic_matcher)` in the lifespan handler to avoid blocking the first request.
 
 ## Directory Layout
 
 ```
 HackGeniX/
   src/
-    main.py                    # FastAPI app, router mounting, lifespan
+    main.py                    # FastAPI app, NVIDIA CUDA DLL registration, eager-load embedding model, router mounting, lifespan
     core/
       config.py                # Settings (pydantic-settings), load_model_config()
       database.py              # Motor MongoDB client, collection accessors
@@ -217,15 +223,16 @@ HackGeniX/
       question_bank.py         # BankQuestion, EnrichedQuestion, QuestionCategory, domains
       auth.py                  # AuthenticatedUser, UserRole, TokenResponse
     services/
-      interview_orchestrator.py  # Central session controller (1070 lines)
-      question_generator.py      # LLM + hybrid question generation (927 lines)
-      answer_evaluator.py        # LLM-as-judge evaluation (657 lines)
-      document_processor.py      # PDF/DOCX parsing (603 lines)
-      semantic_matcher.py        # Embedding-based resume-JD match (423 lines)
+      interview_orchestrator.py  # Central session controller (~1109 lines)
+      question_generator.py      # LLM + hybrid question generation (~980 lines)
+      answer_evaluator.py        # LLM-as-judge evaluation (~736 lines)
+      document_processor.py      # PDF/DOCX parsing (~681 lines)
+      semantic_matcher.py        # Embedding-based resume-JD match + LLM sidecar (~625 lines)
+      session_repository.py      # Async MongoDB session CRUD (~123 lines)
       question_bank.py           # JSONL question bank loader (525 lines)
       hybrid_question_selector.py  # Bank + LLM question selection (388 lines)
       pdf_generator.py           # ReportLab PDF generation (724 lines)
-      prompts.py                 # All LLM prompt templates (702 lines)
+      prompts.py                 # All LLM prompt templates (~755 lines)
     api/
       health.py                # GET /health, GET /health/detailed
       documents.py             # Resume + JD upload, list, delete, match
@@ -242,7 +249,9 @@ HackGeniX/
         ollama_provider.py     # Ollama /api/chat integration
         vllm_provider.py       # OpenAI-compatible vLLM provider
       stt/
+        __init__.py                 # Unified config-aware STT factory (reads models.yaml)
         faster_whisper_provider.py  # CTranslate2 Whisper
+        whisper_provider.py         # Original OpenAI Whisper (fallback)
       tts/
         pyttsx3_provider.py    # System TTS via pyttsx3
       report_storage/
@@ -250,7 +259,7 @@ HackGeniX/
         local_provider.py      # Filesystem report storage
         s3_provider.py         # S3 report storage
   frontend/
-    app.py                     # Gradio tabbed UI (984 lines)
+    app.py                     # Gradio tabbed UI (~898 lines)
     api_client.py              # HTTP client + client-side JWT
   config/
     models.yaml                # LLM/STT/TTS provider configuration

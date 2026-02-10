@@ -7,6 +7,7 @@ and cosine similarity for matching.
 Optionally runs an LLM qualitative sidecar (hybrid mode) controlled
 by the ``matching`` section in ``config/models.yaml``.
 """
+import asyncio
 import json
 import logging
 from typing import List, Dict, Any, Optional, Tuple
@@ -64,6 +65,7 @@ class SemanticMatcher:
         self.model = SentenceTransformer(model_name, device=device)
         self.model_name = model_name
         self.device = device
+        logger.info(f"Embedding model loaded: {model_name} on {device}")
         
         # LLM matching sidecar config
         matching_config = config.get("providers", {}).get("matching", {})
@@ -483,6 +485,25 @@ class SemanticMatcher:
         
         return recommendations
     
+    def _compute_core_scores(
+        self,
+        resume: ParsedResume,
+        job_description: ParsedJobDescription,
+    ) -> Tuple[float, float, List[str], List[str], float]:
+        """
+        Compute all CPU/GPU-bound scores in a single synchronous call.
+        
+        Designed to be called via asyncio.to_thread() so the embedding
+        inference does not block the event loop.
+        
+        Returns:
+            (semantic_score, skill_score, matched_skills, missing_skills, experience_score)
+        """
+        semantic_score = self.compute_semantic_similarity(resume, job_description)
+        skill_score, matched_skills, missing_skills = self.compute_skill_match(resume, job_description)
+        experience_score = self.compute_experience_match(resume, job_description)
+        return semantic_score, skill_score, matched_skills, missing_skills, experience_score
+    
     async def match(
         self,
         resume: ParsedResume,
@@ -506,10 +527,12 @@ class SemanticMatcher:
         """
         logger.info(f"Matching resume {resume_id} against JD {job_description_id}")
         
-        # Compute core algorithmic scores
-        semantic_score = self.compute_semantic_similarity(resume, job_description)
-        skill_score, matched_skills, missing_skills = self.compute_skill_match(resume, job_description)
-        experience_score = self.compute_experience_match(resume, job_description)
+        # Offload CPU/GPU-bound embedding inference to a thread so we
+        # don't block the async event loop.
+        (semantic_score, skill_score, matched_skills,
+         missing_skills, experience_score) = await asyncio.to_thread(
+            self._compute_core_scores, resume, job_description
+        )
         
         # ----- LLM sidecar (optional) -----
         llm_result: Optional[Dict[str, Any]] = None

@@ -83,13 +83,17 @@ class EvaluationScores:
             depth=float(data.get("depth", 0)),
             overall=float(data.get("overall", 0)),
         )
-        # Compute overall if not provided or zero
-        if scores.overall == 0 and any([scores.technical_accuracy, scores.completeness, scores.clarity, scores.depth]):
-            scores.overall = (
+        # Always recompute overall from component scores when available.
+        # This prevents the LLM from inflating the overall score beyond
+        # what the individual dimension scores justify.
+        has_components = any([scores.technical_accuracy, scores.completeness, scores.clarity, scores.depth])
+        if has_components:
+            scores.overall = round(
                 scores.technical_accuracy * 0.35 +
                 scores.completeness * 0.25 +
                 scores.clarity * 0.20 +
-                scores.depth * 0.20
+                scores.depth * 0.20,
+                1,
             )
         return scores
 
@@ -222,8 +226,8 @@ class AnswerEvaluator:
         """
         self.llm = llm_provider or get_llm_provider_sync()
         self._eval_config = GenerationConfig(
-            max_tokens=1024,
-            temperature=0.3,  # Low temperature for consistent evaluation
+            max_tokens=1536,
+            temperature=0.2,  # Low temperature for consistent, deterministic evaluation
             top_p=0.9,
         )
     
@@ -270,24 +274,39 @@ class AnswerEvaluator:
         """
         Evaluate a candidate's answer to a question.
         
+        Uses a two-step rubric-then-evaluate approach: the LLM first generates
+        the correct answer rubric (filling gaps when expected_points is empty),
+        then scores the candidate against that rubric.
+        
         Args:
             question: The interview question
             answer: Candidate's response
-            expected_points: Key points expected in a good answer
+            expected_points: Key points expected in a good answer (may be empty)
             stage: Interview stage (affects evaluation criteria)
             validate: Whether to run hallucination check
             
         Returns:
             Complete answer evaluation
         """
+        # Format expected points — if empty, the prompt instructs the LLM to generate its own
+        if expected_points:
+            points_text = "\n".join(f"- {p}" for p in expected_points)
+        else:
+            points_text = "(none provided — you MUST generate your own rubric points in Step 1)"
+        
         prompt = ANSWER_EVALUATION_PROMPT.format(
             question=question,
-            expected_points="\n".join(f"- {p}" for p in expected_points),
+            expected_points=points_text,
             answer=answer,
         )
         
         messages = [
-            system_message("You are an expert interview evaluator. Evaluate answers fairly and objectively based on the provided criteria."),
+            system_message(
+                "You are a strict, adversarial technical interview evaluator. "
+                "Your job is to identify incorrect, vague, and superficial answers. "
+                "Never give the benefit of the doubt — score based only on what the candidate demonstrably knows. "
+                "Wrong answers get low scores regardless of confidence or fluency."
+            ),
             user_message(prompt),
         ]
         
@@ -305,16 +324,42 @@ class AnswerEvaluator:
                     notes="Evaluation parsing failed",
                 )
             
+            # Extract scores and enforce server-side weighted calculation
+            scores_data = eval_data.get("scores", {})
+            scores = EvaluationScores.from_dict(scores_data)
+            
+            # Override the LLM's overall with our own weighted calculation
+            # to prevent the LLM from inflating the overall score
+            computed_overall = (
+                scores.technical_accuracy * 0.35 +
+                scores.completeness * 0.25 +
+                scores.clarity * 0.20 +
+                scores.depth * 0.20
+            )
+            scores.overall = round(computed_overall, 1)
+            
+            # Build notes with rubric traceability
+            rubric_points = eval_data.get("rubric_points", [])
+            rubric_matches = eval_data.get("rubric_matches", [])
+            rubric_misses = eval_data.get("rubric_misses", [])
+            llm_notes = eval_data.get("notes", "")
+            
+            notes_parts = []
+            if llm_notes:
+                notes_parts.append(llm_notes)
+            if rubric_points:
+                notes_parts.append(f"Rubric ({len(rubric_matches)}/{len(rubric_points)} points matched)")
+            
             evaluation = AnswerEvaluation(
                 question=question,
                 answer=answer,
                 stage=stage,
-                scores=EvaluationScores.from_dict(eval_data.get("scores", {})),
+                scores=scores,
                 strengths=eval_data.get("strengths", []),
                 improvements=eval_data.get("improvements", []),
                 follow_up_question=eval_data.get("follow_up_question"),
                 recommendation=AnswerStrength.from_string(eval_data.get("recommendation", "acceptable")),
-                notes=eval_data.get("notes", ""),
+                notes=" | ".join(notes_parts) if notes_parts else "",
             )
             
             # Validate evaluation if requested
@@ -330,7 +375,16 @@ class AnswerEvaluator:
                 if not evaluation.is_validated and validation.get("corrected_evaluation"):
                     corrected = validation["corrected_evaluation"]
                     if isinstance(corrected, dict) and "scores" in corrected:
-                        evaluation.scores = EvaluationScores.from_dict(corrected["scores"])
+                        corrected_scores = EvaluationScores.from_dict(corrected["scores"])
+                        # Re-enforce weighted overall on corrected scores too
+                        corrected_scores.overall = round(
+                            corrected_scores.technical_accuracy * 0.35 +
+                            corrected_scores.completeness * 0.25 +
+                            corrected_scores.clarity * 0.20 +
+                            corrected_scores.depth * 0.20,
+                            1,
+                        )
+                        evaluation.scores = corrected_scores
                         evaluation.is_validated = True
             else:
                 evaluation.is_validated = True
@@ -359,27 +413,49 @@ class AnswerEvaluator:
         """
         Evaluate a behavioral answer using STAR criteria.
         
+        Uses a two-step approach: the LLM first generates quality indicators
+        for what a good answer should include (filling gaps when red_flags/green_flags
+        are empty), then evaluates the candidate against those indicators.
+        
         Args:
             question: The behavioral question
             answer: Candidate's response
             competency: The competency being assessed
-            red_flags: Warning signs to watch for
-            green_flags: Positive indicators
+            red_flags: Warning signs to watch for (may be empty)
+            green_flags: Positive indicators (may be empty)
             validate: Whether to run hallucination check
             
         Returns:
             Complete answer evaluation with STAR scores
         """
+        # Format flags — if empty, the prompt instructs the LLM to generate its own
+        red_flags_text = (
+            "\n".join(f"- {f}" for f in red_flags)
+            if red_flags
+            else "(none provided — you MUST generate your own red flags for this competency)"
+        )
+        green_flags_text = (
+            "\n".join(f"- {f}" for f in green_flags)
+            if green_flags
+            else "(none provided — you MUST generate your own green flags for this competency)"
+        )
+        
         prompt = BEHAVIORAL_EVALUATION_PROMPT.format(
             question=question,
             competency=competency,
             answer=answer,
-            red_flags="\n".join(f"- {f}" for f in red_flags),
-            green_flags="\n".join(f"- {f}" for f in green_flags),
+            red_flags=red_flags_text,
+            green_flags=green_flags_text,
         )
         
         messages = [
-            system_message("You are an expert behavioral interview evaluator. Assess answers using the STAR framework."),
+            system_message(
+                "You are a strict behavioral interview evaluator. "
+                "Your job is to distinguish genuine, substantive experiences from vague, "
+                "fabricated, or rehearsed non-answers. "
+                "Hypothetical answers ('I would...') are not behavioral evidence. "
+                "Vague answers without specific details score low regardless of polish."
+            ),
             user_message(prompt),
         ]
         
@@ -396,21 +472,46 @@ class AnswerEvaluator:
                     notes="Evaluation parsing failed",
                 )
             
+            # Extract STAR scores and sub-scores
+            star_scores = STARScores.from_dict(eval_data.get("star_scores", {}))
+            authenticity = float(eval_data.get("authenticity_score", 0))
+            relevance = float(eval_data.get("relevance_score", 0))
+            self_awareness = float(eval_data.get("self_awareness_score", 0))
+            
+            # Enforce server-side weighted overall calculation
+            # (star_total * 0.40) + (authenticity * 0.25) + (relevance * 0.20) + (self_awareness * 0.15)
+            computed_overall = round(
+                star_scores.total * 0.40 +
+                authenticity * 0.25 +
+                relevance * 0.20 +
+                self_awareness * 0.15,
+                1,
+            )
+            
+            # Build notes with quality indicators traceability
+            quality_indicators = eval_data.get("quality_indicators", [])
+            llm_notes = eval_data.get("notes", "")
+            notes_parts = []
+            if llm_notes:
+                notes_parts.append(llm_notes)
+            if quality_indicators:
+                notes_parts.append(f"Quality indicators: {len(quality_indicators)} defined")
+            
             evaluation = AnswerEvaluation(
                 question=question,
                 answer=answer,
                 stage=InterviewStage.BEHAVIORAL,
                 scores=EvaluationScores(
-                    overall=float(eval_data.get("overall_score", 0)),
-                    clarity=float(eval_data.get("self_awareness_score", 0)),
-                    completeness=float(eval_data.get("relevance_score", 0)),
-                    technical_accuracy=float(eval_data.get("authenticity_score", 0)),
+                    overall=computed_overall,
+                    clarity=self_awareness,
+                    completeness=relevance,
+                    technical_accuracy=authenticity,
                 ),
-                star_scores=STARScores.from_dict(eval_data.get("star_scores", {})),
+                star_scores=star_scores,
                 strengths=eval_data.get("green_flags_detected", []),
                 improvements=eval_data.get("red_flags_detected", []),
                 recommendation=AnswerStrength.from_string(eval_data.get("recommendation", "acceptable")),
-                notes=eval_data.get("notes", ""),
+                notes=" | ".join(notes_parts) if notes_parts else "",
             )
             
             if validate:

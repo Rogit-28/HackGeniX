@@ -190,6 +190,9 @@ class InterviewSession(BaseModel):
     completed_at: Optional[datetime] = None
     last_activity_at: datetime = Field(default_factory=datetime.utcnow)
     
+    # Match analysis (computed at interview start from semantic matcher)
+    match_analysis: Optional[Dict[str, Any]] = None
+    
     # Error tracking
     error_message: Optional[str] = None
     
