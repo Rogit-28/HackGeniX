@@ -1,0 +1,63 @@
+# HackGeniX - Google Colab Requirements
+# Optimized for Colab runtime 2025.07 (Python 3.11.13, PyTorch 2.6.0)
+# 
+# Usage: pip install -r requirements-colab.txt
+#
+# Key differences from requirements.txt:
+# - Uses >= instead of == for flexibility with Colab pre-installed packages
+# - Excludes torch/numpy (use Colab's pre-installed versions)
+# - Excludes dev/test dependencies (pytest, black, mypy, isort)
+# - Updated sentence-transformers for better compatibility
+
+# ============= Core Backend =============
+fastapi[all]>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-multipart>=0.0.6
+
+# ============= Database =============
+motor>=3.3.0
+pymongo>=4.6.0
+redis>=5.0.0
+
+# ============= Storage =============
+boto3>=1.34.0
+python-dotenv>=1.0.0
+
+# ============= Document Processing =============
+pypdf2>=3.0.0
+pdfplumber>=0.10.0
+python-docx>=1.1.0
+pymupdf>=1.24.0
+pytesseract>=0.3.10
+
+# ============= NLP & Embeddings =============
+# torch - USE COLAB PRE-INSTALLED (2.6.0)
+# numpy - USE COLAB PRE-INSTALLED (2.0.2)
+sentence-transformers>=3.0.0
+
+# ============= LLM Inference =============
+openai>=1.6.0
+
+# ============= Voice Processing =============
+TTS>=0.22.0
+pyttsx3>=2.90
+faster-whisper>=0.10.0
+soundfile>=0.12.0
+pydub>=0.25.0
+
+# ============= Report Generation =============
+reportlab>=4.0.0
+
+# ============= Text Analysis =============
+nltk>=3.8.0
+textblob>=0.17.0
+
+# ============= Utilities =============
+httpx>=0.26.0
+aiofiles>=23.2.0
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+tenacity>=8.2.0
+structlog>=23.2.0
