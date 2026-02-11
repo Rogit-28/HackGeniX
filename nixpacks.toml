@@ -1,8 +1,0 @@
-[phases.setup]
-aptPkgs = ["tesseract-ocr", "tesseract-ocr-eng", "ffmpeg"]
-
-[phases.install]
-cmds = ["pip install -r requirements-prod.txt"]
-
-[variables]
-NIXPACKS_PYTHON_VERSION = "3.11"
