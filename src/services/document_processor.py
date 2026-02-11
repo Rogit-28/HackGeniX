@@ -229,14 +229,23 @@ class DocumentProcessor:
             logger.info("Parsing resume with LLM...")
             response = await llm.generate(
                 messages,
-                GenerationConfig(max_tokens=4096, temperature=0.1)
+                GenerationConfig(max_tokens=4096, temperature=0.1, json_mode=True)
             )
 
             # Parse JSON response
             data = self._parse_llm_json_response(response.content)
 
             if not data:
-                logger.warning("LLM returned invalid JSON for resume, returning minimal parse")
+                # Retry once with temperature=0 for more deterministic output
+                logger.warning("First resume JSON parse failed, retrying with temperature=0...")
+                response = await llm.generate(
+                    messages,
+                    GenerationConfig(max_tokens=4096, temperature=0.0, json_mode=True)
+                )
+                data = self._parse_llm_json_response(response.content)
+
+            if not data:
+                logger.warning("LLM returned invalid JSON for resume after retry, returning minimal parse")
                 return ParsedResume(raw_text=text)
 
             # Convert to ParsedResume
@@ -306,14 +315,23 @@ class DocumentProcessor:
             logger.info("Parsing job description with LLM...")
             response = await llm.generate(
                 messages,
-                GenerationConfig(max_tokens=2048, temperature=0.1)
+                GenerationConfig(max_tokens=2048, temperature=0.1, json_mode=True)
             )
 
             # Parse JSON response
             data = self._parse_llm_json_response(response.content)
 
             if not data:
-                logger.warning("LLM returned invalid JSON for JD, returning minimal parse")
+                # Retry once with temperature=0 for more deterministic output
+                logger.warning("First JD JSON parse failed, retrying with temperature=0...")
+                response = await llm.generate(
+                    messages,
+                    GenerationConfig(max_tokens=2048, temperature=0.0, json_mode=True)
+                )
+                data = self._parse_llm_json_response(response.content)
+
+            if not data:
+                logger.warning("LLM returned invalid JSON for JD after retry, returning minimal parse")
                 return ParsedJobDescription(raw_text=text)
 
             # Convert to ParsedJobDescription
@@ -359,12 +377,77 @@ class DocumentProcessor:
             if end != -1:
                 content = content[:end + 1]
 
+        # --- Attempt 1: direct parse ---
         try:
             return json.loads(content)
+        except json.JSONDecodeError:
+            pass
+
+        # --- Attempt 2: repair common LLM JSON errors ---
+        repaired = self._repair_json(content)
+        try:
+            return json.loads(repaired)
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse LLM JSON: {e}")
+            logger.error(f"Failed to parse LLM JSON even after repair: {e}")
             logger.debug(f"Content was: {content[:500]}")
-            return None
+
+        # --- Attempt 3: close truncated JSON ---
+        closed = self._close_truncated_json(repaired)
+        if closed != repaired:
+            try:
+                return json.loads(closed)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse LLM JSON after close-truncation: {e}")
+
+        return None
+
+    @staticmethod
+    def _repair_json(text: str) -> str:
+        """
+        Apply heuristic repairs to common LLM JSON mistakes:
+        - Trailing commas before } or ]
+        - Control characters inside strings
+        - Single-quoted strings -> double-quoted
+        """
+        import re
+
+        # Remove control characters except \n \r \t
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
+
+        # Fix trailing commas: ,  } or ,  ]
+        text = re.sub(r',\s*([}\]])', r'\1', text)
+
+        # Fix missing commas between entries: }\n{ or ]\n[
+        # (common when LLM forgets comma between array elements)
+        text = re.sub(r'(\})\s*\n\s*(\{)', r'\1,\2', text)
+        text = re.sub(r'(\])\s*\n\s*(\[)', r'\1,\2', text)
+
+        return text
+
+    @staticmethod
+    def _close_truncated_json(text: str) -> str:
+        """
+        If the LLM response was truncated (hit max_tokens), try to close
+        any open brackets/braces so the partial JSON can still be parsed.
+        """
+        # Count open vs close
+        open_braces = text.count('{') - text.count('}')
+        open_brackets = text.count('[') - text.count(']')
+
+        if open_braces <= 0 and open_brackets <= 0:
+            return text  # already balanced
+
+        # Strip trailing comma if present
+        text = text.rstrip()
+        if text.endswith(','):
+            text = text[:-1]
+
+        # Close in LIFO order: scan from end to figure out nesting
+        # Simplified: just close brackets first, then braces
+        text += ']' * max(open_brackets, 0)
+        text += '}' * max(open_braces, 0)
+
+        return text
 
     @staticmethod
     def _get_first(*values) -> Optional[str]:

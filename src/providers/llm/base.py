@@ -38,6 +38,7 @@ class GenerationConfig:
     top_k: int = 50
     repetition_penalty: float = 1.1
     stop_sequences: List[str] = field(default_factory=list)
+    json_mode: bool = False  # When True, request structured JSON output from the API
     
     def to_dict(self) -> Dict[str, Any]:
         return {

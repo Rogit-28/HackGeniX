@@ -394,6 +394,7 @@ class SemanticMatcher:
                 GenerationConfig(
                     max_tokens=self.matching_max_tokens,
                     temperature=self.matching_temperature,
+                    json_mode=True,
                 ),
             )
 
