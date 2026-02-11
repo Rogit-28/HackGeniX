@@ -28,7 +28,7 @@ pytesseract>=0.3.10
 # CPU-only PyTorch — no CUDA libs, ~200MB instead of ~2GB
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.0.0
-sentence-transformers==2.2.2
+sentence-transformers>=2.6.0
 
 # ============= Audio Handling =============
 soundfile==0.12.1
