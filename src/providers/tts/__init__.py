@@ -20,11 +20,19 @@ from src.providers.tts.base import (
     VoiceInfo,
     SynthesisResult,
 )
-from src.providers.tts.pyttsx3_provider import (
-    Pyttsx3TTSProvider,
-    get_tts_provider as get_pyttsx3_provider,
-    get_tts_provider_async as get_pyttsx3_provider_async,
-)
+try:
+    from src.providers.tts.pyttsx3_provider import (
+        Pyttsx3TTSProvider,
+        get_tts_provider as get_pyttsx3_provider,
+        get_tts_provider_async as get_pyttsx3_provider_async,
+    )
+except ImportError:
+    Pyttsx3TTSProvider = None  # type: ignore[assignment,misc]
+    get_pyttsx3_provider = None  # type: ignore[assignment]
+    get_pyttsx3_provider_async = None  # type: ignore[assignment]
+    logging.getLogger(__name__).info(
+        "pyttsx3 not installed — only Groq/Coqui TTS backends available"
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -128,9 +136,15 @@ def get_tts_provider():
             )
 
     # Default / fallback: pyttsx3 ----------------------------------------
-    logger.info("Using pyttsx3 TTS provider")
-    _tts_provider = get_pyttsx3_provider()
-    return _tts_provider
+    if get_pyttsx3_provider is not None:
+        logger.info("Using pyttsx3 TTS provider")
+        _tts_provider = get_pyttsx3_provider()
+        return _tts_provider
+
+    raise RuntimeError(
+        "No TTS provider available. Install pyttsx3 for local fallback, "
+        "or configure groq-tts / coqui-xtts in config/models.yaml."
+    )
 
 
 async def get_tts_provider_async():
