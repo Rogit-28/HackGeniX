@@ -3,6 +3,7 @@ API Client for AI Interviewer Backend.
 
 Handles all HTTP requests with JWT authentication.
 """
+import os
 import httpx
 import jwt
 import time
@@ -47,7 +48,9 @@ class APIClient:
     Handles JWT authentication and provides methods for all API endpoints.
     """
     
-    def __init__(self, base_url: str = "http://localhost:8000"):
+    def __init__(self, base_url: str = None):
+        if base_url is None:
+            base_url = os.environ.get("BACKEND_URL", "http://localhost:8000")
         self.base_url = base_url.rstrip("/")
         self.auth = AuthState()
         self._jwt_secret = "your-super-secret-key-change-in-production"  # Default from backend
