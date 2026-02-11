@@ -186,7 +186,21 @@ class CoquiXTTSProvider:
 
         from TTS.api import TTS  # Heavy import — keep lazy
 
-        self._tts = TTS(model_name=self.model_name).to(self._device)
+        # PyTorch 2.6+ changed torch.load() default to weights_only=True,
+        # which breaks Coqui TTS model loading (pickle-based checkpoints).
+        # Temporarily patch torch.load to use weights_only=False.
+        import torch
+        _original_torch_load = torch.load
+
+        def _patched_torch_load(*args, **kwargs):
+            kwargs.setdefault("weights_only", False)
+            return _original_torch_load(*args, **kwargs)
+
+        torch.load = _patched_torch_load
+        try:
+            self._tts = TTS(model_name=self.model_name).to(self._device)
+        finally:
+            torch.load = _original_torch_load
         self._model_loaded = True
 
         # Restore original ask_tos (good hygiene)

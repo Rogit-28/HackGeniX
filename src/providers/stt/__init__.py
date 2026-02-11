@@ -12,14 +12,26 @@ factory instead of the provider-specific ones.
 import logging
 from typing import Optional
 
-from src.providers.stt.whisper_provider import (
-    WhisperSTTProvider,
-    WhisperModel,
-    TranscriptionResult,
-    TranscriptionSegment,
-    get_whisper_provider,
-    get_whisper_provider_async,
-)
+try:
+    from src.providers.stt.whisper_provider import (
+        WhisperSTTProvider,
+        WhisperModel,
+        TranscriptionResult,
+        TranscriptionSegment,
+        get_whisper_provider,
+        get_whisper_provider_async,
+    )
+except ImportError:
+    WhisperSTTProvider = None  # type: ignore[assignment,misc]
+    WhisperModel = None  # type: ignore[assignment,misc]
+    TranscriptionResult = None  # type: ignore[assignment,misc]
+    TranscriptionSegment = None  # type: ignore[assignment,misc]
+    get_whisper_provider = None  # type: ignore[assignment]
+    get_whisper_provider_async = None  # type: ignore[assignment]
+    logging.getLogger(__name__).info(
+        "OpenAI Whisper not installed — only faster-whisper backend available"
+    )
+
 from src.providers.stt.faster_whisper_provider import (
     FasterWhisperSTTProvider,
     get_faster_whisper_provider,
@@ -80,12 +92,18 @@ def get_stt_provider():
             compute_type=compute_type,
             language=language,
         )
-    else:
+    elif WhisperSTTProvider is not None:
         # Original Whisper
         _stt_provider = WhisperSTTProvider(
             model_name=model_name,
             device=device,
             language=language,
+        )
+    else:
+        raise ImportError(
+            "STT provider set to 'whisper' but the openai-whisper package "
+            "is not installed. Install it with: pip install openai-whisper  "
+            "Or switch to 'faster-whisper' in config/models.yaml."
         )
 
     return _stt_provider
