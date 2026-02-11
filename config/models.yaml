@@ -17,12 +17,12 @@ providers:
     
   embeddings:
     provider: "sentence-transformers"  # Options: sentence-transformers, huggingface
-    model: "BAAI/bge-large-en-v1.5"
-    dimensions: 1024
-    device: "cpu"  # "cuda" or "cpu" — moved to CPU to free VRAM for XTTS + Ollama
-    # Downgrade option for lower VRAM:
-    # model: "sentence-transformers/all-MiniLM-L6-v2"
-    # dimensions: 384
+    model: "sentence-transformers/all-MiniLM-L6-v2"  # Lightweight (~80MB) for cloud deployment
+    dimensions: 384
+    device: "cpu"
+    # Larger local model (uncomment to switch back):
+    # model: "BAAI/bge-large-en-v1.5"
+    # dimensions: 1024
     
   stt:
     provider: "groq-whisper"  # Options: whisper, faster-whisper, groq-whisper
