@@ -3,17 +3,17 @@
 
 providers:
   llm:
-    provider: "ollama"  # Options: vllm, ollama, llamacpp, openai-compatible, groq
-    model: "qwen2.5:3b"  # Using Qwen 2.5 3B for RTX 4050 6GB VRAM
+    provider: "groq"  # Options: vllm, ollama, llamacpp, openai-compatible, groq
+    model: "llama-3.1-8b-instant"
     max_context_length: 8192
+    # Local Ollama config (uncomment to switch back):
+    # provider: "ollama"
+    # model: "qwen2.5:3b"  # RTX 4050 6GB VRAM
     # vLLM config (uncomment when using vLLM):
     # provider: "vllm"
     # model: "meta-llama/Llama-3.1-8B-Instruct"
     # quantization: "awq-4bit"  # Options: none, gptq-4bit, awq-4bit, int8
     # gpu_memory_utilization: 0.85
-    # Groq cloud config (uncomment when using Groq):
-    # provider: "groq"
-    # model: "llama-3.1-70b-versatile"
     
   embeddings:
     provider: "sentence-transformers"  # Options: sentence-transformers, huggingface
@@ -25,41 +25,43 @@ providers:
     # dimensions: 384
     
   stt:
-    provider: "faster-whisper"  # Options: whisper, faster-whisper, groq-whisper
-    model: "large-v3"
-    compute_type: "int8"  # Options: float16, int8, int8_float16
-    device: "cuda"
-    language: "en"  # Force language or "auto" for detection
-    vad_filter: true
-    # Lighter option:
+    provider: "groq-whisper"  # Options: whisper, faster-whisper, groq-whisper
+    model: "whisper-large-v3"
+    language: "en"
+    # Local faster-whisper config (uncomment to switch back):
+    # provider: "faster-whisper"
+    # model: "large-v3"
+    # compute_type: "int8"  # Options: float16, int8, int8_float16
+    # device: "cuda"
+    # vad_filter: true
+    # Lighter local option:
     # model: "medium"
     # compute_type: "int8"
-    # Groq cloud config (uncomment when using Groq):
-    # provider: "groq-whisper"
-    # model: "whisper-large-v3-turbo"
     
   matching:
     # LLM sidecar for hybrid resume-JD matching.
     # When enabled, an LLM qualitative pass runs alongside the
     # embedding-based quantitative scores. Set enabled: false to
     # use pure algorithmic matching only.
-    provider: "ollama"  # Options: vllm, ollama, openai-compatible
-    model: "qwen2.5:3b"
+    provider: "groq"  # Options: vllm, ollama, openai-compatible, groq
+    model: "llama-3.1-8b-instant"
     enabled: true  # Master switch — false = pure embedding, true = hybrid
     max_tokens: 1024
     temperature: 0.1
+    # Local Ollama config (uncomment to switch back):
+    # provider: "ollama"
+    # model: "qwen2.5:3b"
 
   tts:
-    provider: "coqui-xtts"  # Options: coqui-xtts, pyttsx3, groq-tts
-    model: "tts_models/multilingual/multi-dataset/xtts_v2"
-    device: "cuda"
-    reference_audio: "assets/interviewer_voice.wav"  # Optional: WAV for voice cloning
-    speaker: "Claribel Dervla"  # Built-in speaker (used when no reference_audio exists)
-    # Fallback: if TTS pip package is not installed, pyttsx3 is used automatically
-    # Groq cloud config (uncomment when using Groq):
-    # provider: "groq-tts"
-    # model: "canopylabs/orpheus-v1-english"
-    # voice: "troy"
+    provider: "groq-tts"  # Options: coqui-xtts, pyttsx3, groq-tts
+    model: "canopylabs/orpheus-v1-english"
+    voice: "troy"  # Voices: autumn, diana, hannah (F) | austin, daniel, troy (M)
+    # Local Coqui XTTS config (uncomment to switch back):
+    # provider: "coqui-xtts"
+    # model: "tts_models/multilingual/multi-dataset/xtts_v2"
+    # device: "cuda"
+    # reference_audio: "assets/interviewer_voice.wav"
+    # speaker: "Claribel Dervla"
 
 # Fallback configuration
 fallbacks:

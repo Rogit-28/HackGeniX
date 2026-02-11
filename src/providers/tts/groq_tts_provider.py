@@ -266,22 +266,32 @@ class GroqTTSProvider(BaseTTSProvider):
         if len(parts) == 1:
             return parts[0]
 
-        # Read params from the first chunk
-        buf0 = io.BytesIO(parts[0])
-        with wave.open(buf0, "rb") as wf:
-            params = wf.getparams()
-            frames = [wf.readframes(wf.getnframes())]
+        # Groq returns streaming WAVs with RIFF size 0xFFFFFFFF, which
+        # makes getnframes() return INT32_MAX.  We read all raw frame
+        # data with readframes(-1) and rebuild the header from scratch
+        # so the output WAV has correct sizes.
+        all_frames: List[bytes] = []
+        nchannels = sampwidth = framerate = 0
 
-        for p in parts[1:]:
+        for i, p in enumerate(parts):
             buf = io.BytesIO(p)
             with wave.open(buf, "rb") as wf:
-                frames.append(wf.readframes(wf.getnframes()))
+                if i == 0:
+                    nchannels = wf.getnchannels()
+                    sampwidth = wf.getsampwidth()
+                    framerate = wf.getframerate()
+                all_frames.append(wf.readframes(-1))
+
+        combined = b"".join(all_frames)
+        total_frames = len(combined) // (nchannels * sampwidth) if (nchannels * sampwidth) else 0
 
         out = io.BytesIO()
         with wave.open(out, "wb") as wf:
-            wf.setparams(params)
-            for f in frames:
-                wf.writeframes(f)
+            wf.setnchannels(nchannels)
+            wf.setsampwidth(sampwidth)
+            wf.setframerate(framerate)
+            wf.setnframes(total_frames)
+            wf.writeframesraw(combined)
         return out.getvalue()
 
     # ------------------------------------------------------------------
