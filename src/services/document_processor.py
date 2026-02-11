@@ -4,7 +4,9 @@ Document processing service for resumes and job descriptions.
 Handles PDF/DOCX text extraction and LLM-based structured parsing.
 """
 import io
+import os
 import re
+import shutil
 import logging
 import hashlib
 import json
@@ -80,7 +82,10 @@ class DocumentProcessor:
             from PIL import Image
 
             pytesseract.pytesseract.tesseract_cmd = (
-                r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+                shutil.which("tesseract")
+                or (r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+                    if os.name == "nt" and os.path.exists(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+                    else "tesseract")
             )
 
             ocr_parts = []
