@@ -2,7 +2,8 @@
 Text-to-Speech (TTS) providers.
 
 Provides speech synthesis capabilities for the AI Interviewer.
-Supports Coqui XTTS v2 (recommended) and pyttsx3 (fallback).
+Supports Coqui XTTS v2 (recommended), pyttsx3 (fallback), and
+Groq cloud TTS (Orpheus).
 
 The unified factory (get_tts_provider / get_tts_provider_async) reads
 config/models.yaml to decide which backend to use and which model /
@@ -12,11 +13,15 @@ factory instead of the provider-specific ones.
 import logging
 from typing import Optional
 
-from src.providers.tts.pyttsx3_provider import (
-    Pyttsx3TTSProvider,
+from src.providers.tts.base import (
+    BaseTTSProvider,
+    TTSProvider,
     VoiceGender,
     VoiceInfo,
     SynthesisResult,
+)
+from src.providers.tts.pyttsx3_provider import (
+    Pyttsx3TTSProvider,
     get_tts_provider as get_pyttsx3_provider,
     get_tts_provider_async as get_pyttsx3_provider_async,
 )
@@ -100,6 +105,28 @@ def get_tts_provider():
                 e,
             )
 
+    elif provider_name == "groq-orpheus" or provider_name == "groq-tts":
+        try:
+            from src.core.config import get_settings as _get_settings
+            _settings = _get_settings()
+            from src.providers.tts.groq_tts_provider import GroqTTSProvider
+
+            _tts_provider = GroqTTSProvider(
+                model=model_name or "canopylabs/orpheus-v1-english",
+                voice=tts_cfg.get("voice", "troy"),
+                api_key=_settings.groq_api_key,
+                api_url=_settings.groq_api_url,
+            )
+            logger.info("Using Groq TTS provider")
+            return _tts_provider
+
+        except Exception as e:
+            logger.warning(
+                "Failed to initialise Groq TTS provider: %s. "
+                "Falling back to pyttsx3.",
+                e,
+            )
+
     # Default / fallback: pyttsx3 ----------------------------------------
     logger.info("Using pyttsx3 TTS provider")
     _tts_provider = get_pyttsx3_provider()
@@ -112,7 +139,9 @@ async def get_tts_provider_async():
 
 
 __all__ = [
-    # Data classes (shared by all providers)
+    # Base classes (shared by all providers)
+    "BaseTTSProvider",
+    "TTSProvider",
     "VoiceGender",
     "VoiceInfo",
     "SynthesisResult",

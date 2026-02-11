@@ -18,7 +18,8 @@ from typing import Optional, Dict, Any, List
 
 import numpy as np
 
-from src.providers.tts.pyttsx3_provider import (
+from src.providers.tts.base import (
+    BaseTTSProvider,
     VoiceInfo,
     SynthesisResult,
     VoiceGender,
@@ -37,7 +38,7 @@ XTTS_SAMPLE_RATE = 24000
 DEFAULT_SPEAKER = "Claribel Dervla"
 
 
-class CoquiXTTSProvider:
+class CoquiXTTSProvider(BaseTTSProvider):
     """
     Text-to-Speech provider using Coqui XTTS v2.
 

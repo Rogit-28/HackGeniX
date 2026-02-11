@@ -17,55 +17,17 @@ import wave
 import pyttsx3
 import numpy as np
 
+from src.providers.tts.base import (
+    BaseTTSProvider,
+    VoiceGender,
+    VoiceInfo,
+    SynthesisResult,
+)
+
 logger = logging.getLogger(__name__)
 
 
-class VoiceGender(str, Enum):
-    """Voice gender options."""
-    MALE = "male"
-    FEMALE = "female"
-    NEUTRAL = "neutral"
-
-
-@dataclass
-class VoiceInfo:
-    """Information about an available voice."""
-    id: str
-    name: str
-    languages: List[str]
-    gender: Optional[str] = None
-    age: Optional[str] = None
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "id": self.id,
-            "name": self.name,
-            "languages": self.languages,
-            "gender": self.gender,
-            "age": self.age,
-        }
-
-
-@dataclass
-class SynthesisResult:
-    """Result of text-to-speech synthesis."""
-    audio_data: bytes
-    sample_rate: int
-    duration_seconds: float
-    text: str
-    voice_id: str
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "sample_rate": self.sample_rate,
-            "duration_seconds": self.duration_seconds,
-            "text": self.text,
-            "voice_id": self.voice_id,
-            "audio_size_bytes": len(self.audio_data),
-        }
-
-
-class Pyttsx3TTSProvider:
+class Pyttsx3TTSProvider(BaseTTSProvider):
     """
     Text-to-Speech provider using pyttsx3.
     

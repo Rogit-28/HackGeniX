@@ -2,7 +2,7 @@
 Speech-to-Text (STT) providers.
 
 Provides speech recognition capabilities for the AI Interviewer.
-Supports both original Whisper and faster-whisper implementations.
+Supports local Whisper, faster-whisper, and cloud Groq Whisper backends.
 
 The unified factory (get_stt_provider / get_stt_provider_async) reads
 config/models.yaml to decide which backend to use and which model /
@@ -12,20 +12,22 @@ factory instead of the provider-specific ones.
 import logging
 from typing import Optional
 
+from src.providers.stt.base import (
+    BaseSTTProvider,
+    STTProvider,
+    WhisperModel,
+    TranscriptionResult,
+    TranscriptionSegment,
+)
+
 try:
     from src.providers.stt.whisper_provider import (
         WhisperSTTProvider,
-        WhisperModel,
-        TranscriptionResult,
-        TranscriptionSegment,
         get_whisper_provider,
         get_whisper_provider_async,
     )
 except ImportError:
     WhisperSTTProvider = None  # type: ignore[assignment,misc]
-    WhisperModel = None  # type: ignore[assignment,misc]
-    TranscriptionResult = None  # type: ignore[assignment,misc]
-    TranscriptionSegment = None  # type: ignore[assignment,misc]
     get_whisper_provider = None  # type: ignore[assignment]
     get_whisper_provider_async = None  # type: ignore[assignment]
     logging.getLogger(__name__).info(
@@ -92,6 +94,16 @@ def get_stt_provider():
             compute_type=compute_type,
             language=language,
         )
+    elif provider_name == "groq-whisper":
+        from src.core.config import get_settings as _get_settings
+        _settings = _get_settings()
+        from src.providers.stt.groq_whisper_provider import GroqWhisperSTTProvider
+        _stt_provider = GroqWhisperSTTProvider(
+            model_name=model_name or "whisper-large-v3-turbo",
+            api_key=_settings.groq_api_key,
+            api_url=_settings.groq_api_url,
+            language=language,
+        )
     elif WhisperSTTProvider is not None:
         # Original Whisper
         _stt_provider = WhisperSTTProvider(
@@ -115,11 +127,14 @@ async def get_stt_provider_async():
 
 
 __all__ = [
-    # Original Whisper
-    "WhisperSTTProvider",
+    # Base classes (shared by all providers)
+    "BaseSTTProvider",
+    "STTProvider",
     "WhisperModel",
     "TranscriptionResult",
     "TranscriptionSegment",
+    # Original Whisper
+    "WhisperSTTProvider",
     "get_whisper_provider",
     "get_whisper_provider_async",
     # Faster Whisper (recommended)

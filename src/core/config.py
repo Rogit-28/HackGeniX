@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     # Ollama
     ollama_api_url: str = "http://localhost:11434"
     
+    # Groq Cloud API
+    groq_api_key: Optional[str] = None
+    groq_api_url: str = "https://api.groq.com/openai/v1"
+    
     # Feature Flags
     enable_voice_pipeline: bool = True
     enable_tts_cache: bool = True

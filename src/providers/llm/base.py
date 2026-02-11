@@ -16,6 +16,7 @@ class LLMProvider(str, Enum):
     OLLAMA = "ollama"
     LLAMACPP = "llamacpp"
     OPENAI_COMPATIBLE = "openai-compatible"
+    GROQ = "groq"
 
 
 @dataclass

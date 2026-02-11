@@ -8,7 +8,7 @@ import io
 import logging
 import tempfile
 from pathlib import Path
-from typing import Optional, Union, Dict, Any
+from typing import Optional, Union, Dict, Any, List
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -17,57 +17,17 @@ import torch
 import whisper
 import soundfile as sf
 
+from src.providers.stt.base import (
+    BaseSTTProvider,
+    TranscriptionResult,
+    TranscriptionSegment,
+    WhisperModel,
+)
+
 logger = logging.getLogger(__name__)
 
 
-class WhisperModel(str, Enum):
-    """Available Whisper model sizes."""
-    TINY = "tiny"       # 39M params, ~1GB VRAM, fastest
-    BASE = "base"       # 74M params, ~1GB VRAM
-    SMALL = "small"     # 244M params, ~2GB VRAM
-    MEDIUM = "medium"   # 769M params, ~5GB VRAM
-    LARGE = "large"     # 1550M params, ~10GB VRAM, most accurate
-
-
-@dataclass
-class TranscriptionResult:
-    """Result of speech-to-text transcription."""
-    text: str
-    language: str
-    confidence: float
-    duration_seconds: float
-    segments: list = field(default_factory=list)
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "text": self.text,
-            "language": self.language,
-            "confidence": self.confidence,
-            "duration_seconds": self.duration_seconds,
-            "segments": self.segments,
-        }
-
-
-@dataclass
-class TranscriptionSegment:
-    """A segment of transcribed audio with timing info."""
-    id: int
-    start: float
-    end: float
-    text: str
-    confidence: float
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "id": self.id,
-            "start": self.start,
-            "end": self.end,
-            "text": self.text,
-            "confidence": self.confidence,
-        }
-
-
-class WhisperSTTProvider:
+class WhisperSTTProvider(BaseSTTProvider):
     """
     Speech-to-Text provider using OpenAI's Whisper.
     

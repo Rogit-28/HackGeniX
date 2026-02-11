@@ -3,7 +3,7 @@
 
 providers:
   llm:
-    provider: "ollama"  # Options: vllm, ollama, llamacpp, openai-compatible
+    provider: "ollama"  # Options: vllm, ollama, llamacpp, openai-compatible, groq
     model: "qwen2.5:3b"  # Using Qwen 2.5 3B for RTX 4050 6GB VRAM
     max_context_length: 8192
     # vLLM config (uncomment when using vLLM):
@@ -11,6 +11,9 @@ providers:
     # model: "meta-llama/Llama-3.1-8B-Instruct"
     # quantization: "awq-4bit"  # Options: none, gptq-4bit, awq-4bit, int8
     # gpu_memory_utilization: 0.85
+    # Groq cloud config (uncomment when using Groq):
+    # provider: "groq"
+    # model: "llama-3.1-70b-versatile"
     
   embeddings:
     provider: "sentence-transformers"  # Options: sentence-transformers, huggingface
@@ -22,7 +25,7 @@ providers:
     # dimensions: 384
     
   stt:
-    provider: "faster-whisper"  # Options: whisper, faster-whisper
+    provider: "faster-whisper"  # Options: whisper, faster-whisper, groq-whisper
     model: "large-v3"
     compute_type: "int8"  # Options: float16, int8, int8_float16
     device: "cuda"
@@ -31,6 +34,9 @@ providers:
     # Lighter option:
     # model: "medium"
     # compute_type: "int8"
+    # Groq cloud config (uncomment when using Groq):
+    # provider: "groq-whisper"
+    # model: "whisper-large-v3-turbo"
     
   matching:
     # LLM sidecar for hybrid resume-JD matching.
@@ -44,12 +50,16 @@ providers:
     temperature: 0.1
 
   tts:
-    provider: "coqui-xtts"  # Options: coqui-xtts, pyttsx3
+    provider: "coqui-xtts"  # Options: coqui-xtts, pyttsx3, groq-tts
     model: "tts_models/multilingual/multi-dataset/xtts_v2"
     device: "cuda"
     reference_audio: "assets/interviewer_voice.wav"  # Optional: WAV for voice cloning
     speaker: "Claribel Dervla"  # Built-in speaker (used when no reference_audio exists)
     # Fallback: if TTS pip package is not installed, pyttsx3 is used automatically
+    # Groq cloud config (uncomment when using Groq):
+    # provider: "groq-tts"
+    # model: "canopylabs/orpheus-v1-english"
+    # voice: "troy"
 
 # Fallback configuration
 fallbacks:

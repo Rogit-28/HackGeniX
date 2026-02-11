@@ -75,6 +75,15 @@ class LLMProviderFactory:
                 **{k: v for k, v in kwargs.items() if k not in ["api_url", "api_key"]}
             )
         
+        elif provider_type == LLMProvider.GROQ.value or provider_type == "groq":
+            from src.providers.llm.groq_provider import GroqLLMProvider
+            return GroqLLMProvider(
+                model=model,
+                api_key=kwargs.get("api_key", settings.groq_api_key),
+                api_url=kwargs.get("api_url", settings.groq_api_url),
+                **{k: v for k, v in kwargs.items() if k not in ["api_url", "api_key"]}
+            )
+        
         else:
             raise ValueError(f"Unsupported LLM provider: {provider_type}")
     

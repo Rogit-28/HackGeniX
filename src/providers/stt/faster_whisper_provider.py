@@ -15,58 +15,17 @@ from enum import Enum
 import numpy as np
 import soundfile as sf
 
+from src.providers.stt.base import (
+    BaseSTTProvider,
+    TranscriptionResult,
+    TranscriptionSegment,
+    WhisperModel,
+)
+
 logger = logging.getLogger(__name__)
 
 
-class WhisperModel(str, Enum):
-    """Available Whisper model sizes."""
-    TINY = "tiny"       # 39M params, fastest
-    BASE = "base"       # 74M params
-    SMALL = "small"     # 244M params
-    MEDIUM = "medium"   # 769M params
-    LARGE_V2 = "large-v2"  # 1550M params
-    LARGE_V3 = "large-v3"  # Latest large model
-
-
-@dataclass
-class TranscriptionResult:
-    """Result of speech-to-text transcription."""
-    text: str
-    language: str
-    confidence: float
-    duration_seconds: float
-    segments: List[Dict] = field(default_factory=list)
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "text": self.text,
-            "language": self.language,
-            "confidence": self.confidence,
-            "duration_seconds": self.duration_seconds,
-            "segments": self.segments,
-        }
-
-
-@dataclass
-class TranscriptionSegment:
-    """A segment of transcribed audio with timing info."""
-    id: int
-    start: float
-    end: float
-    text: str
-    confidence: float
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "id": self.id,
-            "start": self.start,
-            "end": self.end,
-            "text": self.text,
-            "confidence": self.confidence,
-        }
-
-
-class FasterWhisperSTTProvider:
+class FasterWhisperSTTProvider(BaseSTTProvider):
     """
     Speech-to-Text provider using faster-whisper (CTranslate2).
     
