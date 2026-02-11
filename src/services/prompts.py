@@ -659,7 +659,7 @@ Read every line of the text above. For each piece of information, decide which J
 7. Use null for missing/uncertain fields, never empty strings.
 8. The candidate's name is the largest text at the very top. Do NOT confuse it with university, company, or location names.
 9. Preserve original date formats from the resume.
-10. If GPA is a percentage, convert to 4.0 scale (divide by 25).
+10. GPA must be a plain number (e.g. 3.72). If the resume shows a percentage, divide it by 25 yourself and write only the resulting number. NEVER write math expressions like "9.31 / 25" — compute the result and write 0.37 instead.
 
 **Output JSON structure:**
 {{

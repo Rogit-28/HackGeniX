@@ -128,6 +128,29 @@ class GroqLLMProvider(BaseLLMProvider):
                 latency_ms=latency,
             )
         except httpx.HTTPStatusError as e:
+            # Groq returns 400 with json_validate_failed when JSON mode is on
+            # but the generated JSON has minor issues (e.g. math expressions).
+            # The failed_generation field contains the raw text — return it so
+            # the caller's JSON repair pipeline can attempt to salvage it.
+            if e.response.status_code == 400 and config.json_mode:
+                try:
+                    err_data = e.response.json()
+                    failed = err_data.get("error", {}).get("failed_generation")
+                    if failed:
+                        logger.warning(
+                            "Groq json_validate_failed — returning failed_generation "
+                            "for caller-side repair (%d chars)", len(failed),
+                        )
+                        latency = (time.perf_counter() - start) * 1000
+                        return LLMResponse(
+                            content=failed,
+                            model=self.model,
+                            finish_reason="json_validate_failed",
+                            usage={},
+                            latency_ms=latency,
+                        )
+                except Exception:
+                    pass  # fall through to original raise
             logger.error("Groq API error: %s — %s", e.response.status_code, e.response.text)
             raise
         except Exception as e:

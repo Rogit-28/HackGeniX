@@ -407,12 +407,23 @@ class DocumentProcessor:
         Apply heuristic repairs to common LLM JSON mistakes:
         - Trailing commas before } or ]
         - Control characters inside strings
-        - Single-quoted strings -> double-quoted
+        - Inline math expressions (e.g. 9.31 / 25 -> evaluated result)
         """
         import re
 
         # Remove control characters except \n \r \t
         text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
+
+        # Evaluate simple math expressions used as JSON values
+        # Matches patterns like: 9.31 / 25  or  100 * 0.04  (outside of quotes)
+        def _eval_math(m):
+            try:
+                result = eval(m.group(0))  # safe: only matched \d, ., +, -, *, /
+                return str(round(result, 4))
+            except Exception:
+                return m.group(0)
+
+        text = re.sub(r'(?<=:\s)(\d+(?:\.\d+)?\s*[+\-*/]\s*\d+(?:\.\d+)?)', _eval_math, text)
 
         # Fix trailing commas: ,  } or ,  ]
         text = re.sub(r',\s*([}\]])', r'\1', text)
