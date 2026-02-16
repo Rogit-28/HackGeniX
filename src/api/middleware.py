@@ -49,6 +49,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if self._is_public_path(request.url.path):
             return await call_next(request)
         
+        # Skip WebSocket upgrades — they handle auth via ?token= query param
+        if request.headers.get("upgrade", "").lower() == "websocket":
+            return await call_next(request)
+        
         # Extract and validate token
         try:
             user = await self._authenticate_request(request)
