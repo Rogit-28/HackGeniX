@@ -184,7 +184,11 @@ class GroqLLMProvider(BaseLLMProvider):
             async with self._client.stream(
                 "POST", "/chat/completions", json=payload
             ) as resp:
-                resp.raise_for_status()
+                # Must read body before raise_for_status() on streaming
+                # responses — httpx needs .text for the error message
+                if resp.status_code >= 400:
+                    await resp.aread()
+                    resp.raise_for_status()
                 async for line in resp.aiter_lines():
                     if not line.startswith("data: "):
                         continue
@@ -200,13 +204,7 @@ class GroqLLMProvider(BaseLLMProvider):
                     except (json.JSONDecodeError, KeyError, IndexError):
                         continue
         except httpx.HTTPStatusError as e:
-            # Streaming responses must be read before accessing .text
-            try:
-                await e.response.aread()
-                body = e.response.text
-            except Exception:
-                body = "(could not read response body)"
-            logger.error("Groq stream error: %s — %s", e.response.status_code, body)
+            logger.error("Groq stream error: %s — %s", e.response.status_code, e.response.text)
             raise
         except Exception as e:
             logger.error("Groq LLM streaming failed: %s", e)
