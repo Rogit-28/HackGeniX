@@ -82,9 +82,16 @@ class GroqWhisperSTTProvider(BaseSTTProvider):
     async def _prepare_audio_bytes(
         self,
         audio_data: Union[bytes, np.ndarray, str, Path],
+        content_type: Optional[str] = None,
     ) -> tuple:
         """
         Convert audio_data to (filename, bytes, content_type) for upload.
+
+        Args:
+            audio_data: Audio as bytes, numpy array, or file path.
+            content_type: Explicit MIME type for raw bytes (e.g.
+                ``"audio/webm"``).  When provided, the correct filename
+                extension and content-type are used instead of assuming WAV.
 
         Returns:
             Tuple of (filename, file_bytes, content_type).
@@ -103,7 +110,23 @@ class GroqWhisperSTTProvider(BaseSTTProvider):
             buf.seek(0)
             return ("audio.wav", buf.read(), "audio/wav")
 
-        # Raw bytes — assume WAV
+        # Raw bytes — use explicit content_type if provided
+        if content_type:
+            # Normalize: strip codec params for extension lookup
+            base_ct = content_type.split(";")[0].strip().lower()
+            ext_map = {
+                "audio/webm": ".webm",
+                "audio/ogg": ".ogg",
+                "audio/mp4": ".mp4",
+                "audio/mpeg": ".mp3",
+                "audio/wav": ".wav",
+                "audio/x-wav": ".wav",
+                "audio/flac": ".flac",
+            }
+            ext = ext_map.get(base_ct, ".webm")
+            return (f"audio{ext}", audio_data, base_ct)
+
+        # Fallback — assume WAV
         return ("audio.wav", audio_data, "audio/wav")
 
     # ------------------------------------------------------------------
@@ -116,9 +139,19 @@ class GroqWhisperSTTProvider(BaseSTTProvider):
         language: Optional[str] = None,
         prompt: Optional[str] = None,
         word_timestamps: bool = False,
+        content_type: Optional[str] = None,
     ) -> TranscriptionResult:
-        """Transcribe audio via Groq Whisper API."""
-        filename, file_bytes, content_type = await self._prepare_audio_bytes(audio_data)
+        """Transcribe audio via Groq Whisper API.
+
+        Args:
+            content_type: Explicit MIME type for raw bytes (e.g.
+                ``"audio/webm"``).  Passed through to
+                :meth:`_prepare_audio_bytes` so Groq receives the correct
+                filename extension and content-type header.
+        """
+        filename, file_bytes, content_type = await self._prepare_audio_bytes(
+            audio_data, content_type=content_type,
+        )
 
         # Build multipart form data
         data: Dict[str, Any] = {
@@ -192,6 +225,7 @@ class GroqWhisperSTTProvider(BaseSTTProvider):
         audio_data: Union[bytes, np.ndarray, str, Path],
         context: Optional[str] = None,
         technical_terms: Optional[List[str]] = None,
+        content_type: Optional[str] = None,
     ) -> TranscriptionResult:
         """Transcribe with interview-specific prompt context."""
         prompt_parts = ["This is a technical interview conversation."]
@@ -209,6 +243,7 @@ class GroqWhisperSTTProvider(BaseSTTProvider):
             audio_data=audio_data,
             prompt=prompt,
             word_timestamps=True,
+            content_type=content_type,
         )
 
     # ------------------------------------------------------------------

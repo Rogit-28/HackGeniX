@@ -201,24 +201,22 @@ async def _transcribe_audio(
 
     stt = await get_stt_provider_async()
 
-    # Determine filename/content-type for the multipart upload
-    ext_map = {
-        "audio/webm": ("audio.webm", "audio/webm"),
-        "audio/webm;codecs=opus": ("audio.webm", "audio/webm"),
-        "audio/mp4": ("audio.mp4", "audio/mp4"),
-        "audio/wav": ("audio.wav", "audio/wav"),
-        "audio/x-wav": ("audio.wav", "audio/wav"),
-        "audio/ogg": ("audio.ogg", "audio/ogg"),
-    }
-    _filename, _ct = ext_map.get(mime_type.lower(), ("audio.webm", "audio/webm"))
+    logger.info(
+        "Transcribing audio: %d bytes, mime=%s, has_context=%s",
+        len(audio_buffer), mime_type, bool(context),
+    )
 
     if context:
         result = await stt.transcribe_with_interview_context(
             audio_data=audio_buffer,
             technical_terms=context,
+            content_type=mime_type,
         )
     else:
-        result = await stt.transcribe(audio_data=audio_buffer)
+        result = await stt.transcribe(
+            audio_data=audio_buffer,
+            content_type=mime_type,
+        )
 
     return {
         "text": result.text,
@@ -553,7 +551,19 @@ async def interview_websocket(
                         continue
 
                     if action == ControlAction.STOP_RECORDING.value:
+                        # Grace period: keep accepting trailing audio chunks
+                        # for up to 500ms.  The browser's MediaRecorder fires
+                        # ondataavailable every 250ms, so the final chunk may
+                        # arrive *after* the JSON stop message.
+                        is_recording = True  # keep gate open for trailing bytes
+                        buf_before = len(audio_buffer)
+                        await asyncio.sleep(0.5)
                         is_recording = False
+                        logger.info(
+                            "stop_recording: buffer %d -> %d bytes (+%d trailing)",
+                            buf_before, len(audio_buffer),
+                            len(audio_buffer) - buf_before,
+                        )
                         await _process_answer()
                         continue
 
