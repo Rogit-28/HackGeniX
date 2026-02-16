@@ -200,7 +200,13 @@ class GroqLLMProvider(BaseLLMProvider):
                     except (json.JSONDecodeError, KeyError, IndexError):
                         continue
         except httpx.HTTPStatusError as e:
-            logger.error("Groq stream error: %s — %s", e.response.status_code, e.response.text)
+            # Streaming responses must be read before accessing .text
+            try:
+                await e.response.aread()
+                body = e.response.text
+            except Exception:
+                body = "(could not read response body)"
+            logger.error("Groq stream error: %s — %s", e.response.status_code, body)
             raise
         except Exception as e:
             logger.error("Groq LLM streaming failed: %s", e)
