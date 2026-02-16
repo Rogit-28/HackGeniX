@@ -82,7 +82,12 @@ class InterviewQuestion(BaseModel):
     status: QuestionStatus = QuestionStatus.PENDING
     
     # Phase 6.5: Question source tracking
-    source: str = "generated"  # bank, bank_rephrased, bank_personalized, generated
+    source: str = "generated"  # bank, bank_rephrased, bank_personalized, generated, follow_up, augmented
+    
+    # Phase 7: Question augmentation tracking
+    parent_question_id: Optional[str] = None       # ID of parent question (for follow-up sub-questions)
+    sub_question_number: Optional[int] = None       # e.g. 1 for "Q3a", 2 for "Q3b"
+    original_question_text: Optional[str] = None    # Original text before augmentation
     
     # Audio for voice mode
     audio_path: Optional[str] = None
@@ -128,6 +133,7 @@ class InterviewConfig(BaseModel):
     adaptive_difficulty: bool = True
     enable_follow_ups: bool = True
     max_follow_ups_per_question: int = 2
+    enable_question_augmentation: bool = True  # Phase 7: Augment questions based on candidate answers
     
     # Time limits (in seconds, 0 = no limit)
     max_duration_seconds: int = 3600  # 1 hour default
@@ -192,6 +198,10 @@ class InterviewSession(BaseModel):
     
     # Match analysis (computed at interview start from semantic matcher)
     match_analysis: Optional[Dict[str, Any]] = None
+    
+    # Phase 7: Candidate context for question augmentation
+    candidate_context: Optional[Dict[str, Any]] = None
+    follow_up_count: int = 0  # Total follow-up sub-questions inserted so far
     
     # Error tracking
     error_message: Optional[str] = None

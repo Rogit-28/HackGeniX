@@ -944,3 +944,142 @@ Rules:
 
 Return ONLY valid JSON.
 """
+
+
+# ============================================================================
+# Phase 7: Question Augmentation Prompts
+# ============================================================================
+
+CONTEXT_EXTRACTION_PROMPT = """You are an interview analysis engine. After each candidate answer, you extract structured insights that will guide subsequent questions.
+
+**Interview Context:**
+- Role: {role_title}
+- Stage: {current_stage}
+- Questions remaining: {questions_remaining}
+
+**Resume Summary:**
+{resume_summary}
+
+**Match Analysis Summary:**
+{match_summary}
+
+**Full Q&A History So Far:**
+{qa_history}
+
+**Latest Question:**
+{latest_question}
+
+**Latest Answer:**
+{latest_answer}
+
+**Latest Evaluation:**
+- Overall Score: {latest_score}/100
+- Recommendation: {latest_recommendation}
+- Strengths: {latest_strengths}
+- Improvements: {latest_improvements}
+
+**Existing Context (from prior rounds, may be empty on first question):**
+{existing_context}
+
+**Your task:**
+Analyze the candidate's latest answer in context of their full interview performance so far. Extract actionable insights for the interviewer.
+
+**Output JSON — return ONLY this structure, no markdown fences:**
+{{
+    "demonstrated_skills": ["skills the candidate has clearly demonstrated with evidence across all answers so far"],
+    "weak_areas": ["areas where the candidate has shown weakness, confusion, or superficial knowledge"],
+    "standout_points": ["notable claims, impressive achievements, or unique insights the candidate mentioned that deserve attention"],
+    "follow_up_hooks": ["specific statements or claims from the latest answer that could be probed deeper — include the exact quote or paraphrase"],
+    "cross_stage_connections": ["topics from earlier stages that relate to the current answer and could be referenced in upcoming questions"],
+    "confidence_assessment": "high|medium|low — how confident are you in the candidate's genuine understanding vs. surface-level responses",
+    "suggested_focus": "1 sentence describing what the next question should focus on based on this analysis"
+}}
+
+**Rules:**
+- Only include skills in demonstrated_skills if the candidate actually showed understanding, not just mentioned them
+- follow_up_hooks must reference specific things the candidate SAID, not generic topics
+- Keep each list to 3-5 items maximum — quality over quantity
+- If this is the first question, cross_stage_connections should be empty"""
+
+
+AUGMENT_QUESTION_PROMPT = """You are an expert interviewer adapting a pre-generated question based on the candidate's prior answers.
+
+**Original Question (pre-generated):**
+{original_question}
+
+**Question Stage:** {question_stage}
+**Question Purpose:** {question_purpose}
+
+**Candidate Context Profile:**
+{candidate_context}
+
+**Your task:**
+Modify the original question to incorporate context from the candidate's prior answers. This makes the interview feel like a natural conversation rather than a checklist.
+
+**Augmentation strategies (use one or more):**
+1. **Reference prior answers:** "Earlier you mentioned [X] — how would that apply to..."
+2. **Build on demonstrated skills:** "Given your experience with [demonstrated skill], ..."
+3. **Probe weak areas:** If the question topic overlaps with a weak area, sharpen the focus
+4. **Connect stages:** Reference something from a different stage if relevant
+5. **Challenge standout claims:** If the candidate made a bold claim, weave it into the question
+
+**Guidelines:**
+- Preserve the CORE INTENT and DIFFICULTY of the original question
+- Do NOT change the fundamental topic — only add contextual framing
+- Keep the augmented question concise (1-3 sentences max)
+- The augmentation should feel natural, not forced
+- If there's no meaningful connection to prior answers, return the original question unchanged
+
+**Output JSON — return ONLY this structure, no markdown fences:**
+{{
+    "augmented_question": "The modified question text",
+    "augmentation_applied": true|false,
+    "augmentation_reason": "Brief explanation of what context was woven in, or 'No meaningful connection found' if unchanged"
+}}"""
+
+
+GENERATE_FOLLOWUP_SUBQUESTION_PROMPT = """You are an expert interviewer deciding whether to ask a follow-up sub-question before moving to the next topic.
+
+**Just-Answered Question:**
+{parent_question}
+
+**Candidate's Answer:**
+{candidate_answer}
+
+**Evaluation Results:**
+- Overall Score: {eval_score}/100
+- Recommendation: {eval_recommendation}
+- Strengths: {eval_strengths}
+- Improvements: {eval_improvements}
+- Evaluator's Follow-up Suggestion: {eval_follow_up}
+
+**Candidate Context Profile:**
+{candidate_context}
+
+**Interview Constraints:**
+- Stage: {current_stage}
+- Questions remaining after this: {questions_remaining}
+- Follow-ups already asked for this parent question: {follow_ups_so_far}
+- Max follow-ups per question: {max_follow_ups}
+
+**Decision criteria — ask a follow-up ONLY if one of these is true:**
+1. The candidate made a specific technical claim that hasn't been verified (e.g., "I optimized latency by 10x" — follow up with "Walk me through how you measured and achieved that")
+2. The answer was vague on a CRITICAL skill for the role and needs clarification
+3. The candidate showed surprising depth that's worth exploring further
+4. The evaluation score was below 40 AND the topic is critical to the role
+
+**Do NOT ask a follow-up if:**
+- The answer was adequate (score 60+) and the topic isn't critical
+- There are fewer than 3 questions remaining (preserve time for coverage)
+- A follow-up was already asked for this question and the candidate didn't improve
+- The topic will naturally be covered by an upcoming question
+
+**Output JSON — return ONLY this structure, no markdown fences:**
+{{
+    "should_follow_up": true|false,
+    "follow_up_question": "The follow-up question text, or null if should_follow_up is false",
+    "purpose": "What this follow-up probes, or null",
+    "expected_answer_points": ["key point 1", "key point 2"],
+    "trigger_reason": "Which decision criterion triggered this follow-up, or 'none'"
+}}"""
+

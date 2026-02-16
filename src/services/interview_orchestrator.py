@@ -49,6 +49,11 @@ from src.services.hybrid_question_selector import (
     HybridQuestionSelector,
     get_hybrid_question_selector,
 )
+from src.services.candidate_context import (
+    CandidateContext,
+    CandidateContextBuilder,
+    get_candidate_context_builder,
+)
 from src.services.prompts import (
     InterviewStage as PromptStage,
     QuestionDifficulty,
@@ -120,6 +125,9 @@ class InterviewOrchestrator:
         # Voice providers (lazy loaded)
         self._stt_provider = None
         self._tts_provider = None
+        
+        # Phase 7: Context builder (lazy loaded)
+        self._context_builder = None
     
     async def _save_session(self, session: InterviewSession) -> None:
         """Persist session to MongoDB (write-through cache)."""
@@ -143,6 +151,12 @@ class InterviewOrchestrator:
         if self._hybrid_selector is None:
             self._hybrid_selector = get_hybrid_question_selector()
         return self._hybrid_selector
+    
+    @property
+    def context_builder(self) -> CandidateContextBuilder:
+        if self._context_builder is None:
+            self._context_builder = get_candidate_context_builder()
+        return self._context_builder
     
     async def _get_stt_provider(self):
         """Get STT provider (lazy load)."""
@@ -965,6 +979,206 @@ class InterviewOrchestrator:
             else:
                 session.performance_trend = "stable"
     
+    # ------------------------------------------------------------------
+    # Phase 7: Question augmentation helpers
+    # ------------------------------------------------------------------
+
+    def _build_qa_history(self, session: InterviewSession) -> List[Dict[str, Any]]:
+        """Build QA history list from session answers for the context builder prompt."""
+        qa_history: List[Dict[str, Any]] = []
+        for answer in session.answers:
+            qa_history.append({
+                "question": answer.question_text,
+                "answer": answer.answer_text,
+                "stage": answer.stage if isinstance(answer.stage, str) else _get_enum_value(answer.stage),
+                "score": answer.scores.get("overall", 0),
+                "strengths": answer.strengths,
+                "improvements": answer.improvements,
+                "recommendation": answer.recommendation,
+            })
+        return qa_history
+
+    def _build_match_summary(self, session: InterviewSession) -> str:
+        """Extract a concise match summary string from session.match_analysis."""
+        ma = session.match_analysis
+        if not ma:
+            return "Not available"
+        
+        parts: List[str] = []
+        overall = ma.get("overall_score")
+        if overall is not None:
+            parts.append(f"Overall match: {overall:.1f}/100")
+        
+        matched = ma.get("matched_skills", [])
+        if matched:
+            parts.append(f"Matched skills: {', '.join(matched[:8])}")
+        
+        missing = ma.get("missing_skills", [])
+        if missing:
+            parts.append(f"Missing skills: {', '.join(missing[:8])}")
+        
+        skill_score = ma.get("skill_match_score")
+        if skill_score is not None:
+            parts.append(f"Skill match: {skill_score:.1f}/100")
+        
+        return "; ".join(parts) if parts else "Not available"
+
+    def _get_base_question_counts(self, session: InterviewSession) -> Tuple[int, int]:
+        """
+        Return (base_answered, base_total) excluding follow-up sub-questions.
+        
+        Follow-up questions have parent_question_id set.
+        This keeps the progress display stable: "Q3 of 10 (+2 follow-ups)"
+        instead of inflating the denominator.
+        """
+        base_total = sum(1 for q in session.questions if q.parent_question_id is None)
+        base_answered = sum(
+            1 for q in session.questions
+            if q.parent_question_id is None and _get_enum_value(q.status) == "answered"
+        )
+        return base_answered, base_total
+
+    async def _run_augmentation_pipeline(
+        self,
+        session: InterviewSession,
+        evaluation: Any,
+        answer_text: str,
+        current_question: InterviewQuestion,
+    ) -> None:
+        """
+        Run the Phase 7 augmentation pipeline after an answer is evaluated.
+        
+        Steps:
+            1. Build/update candidate context via LLM call
+            2. Check if follow-up sub-question is warranted
+            3. If follow-up: generate and insert into question list
+            4. If no follow-up: augment the next base question in-place
+        """
+        try:
+            # Build inputs
+            qa_history = self._build_qa_history(session)
+            match_summary = self._build_match_summary(session)
+            
+            resume_summary = f"{session.candidate_name or 'Candidate'} applying for {session.role_title or 'Software Engineer'}"
+            
+            current_stage = _get_enum_value(session.current_stage)
+            base_answered, base_total = self._get_base_question_counts(session)
+            questions_remaining = base_total - base_answered
+            
+            latest_score = evaluation.scores.overall
+            latest_recommendation = evaluation.recommendation.value if hasattr(evaluation.recommendation, 'value') else str(evaluation.recommendation)
+            
+            # Restore existing context from session (if any)
+            existing_ctx = None
+            if session.candidate_context:
+                existing_ctx = CandidateContext.from_dict(session.candidate_context)
+            
+            # Step 1: Update candidate context
+            ctx = await self.context_builder.update_context(
+                existing_context=existing_ctx,
+                role_title=session.role_title or "Software Engineer",
+                resume_summary=resume_summary,
+                match_summary=match_summary,
+                current_stage=current_stage,
+                questions_remaining=questions_remaining,
+                latest_question=current_question.question_text,
+                latest_answer=answer_text,
+                latest_score=latest_score,
+                latest_recommendation=latest_recommendation,
+                latest_strengths=evaluation.strengths,
+                latest_improvements=evaluation.improvements,
+                qa_history=qa_history,
+            )
+            
+            # Persist updated context
+            session.candidate_context = ctx.to_dict()
+            
+            # Step 2: Check if follow-up is warranted
+            # Count follow-ups already asked for this specific parent question
+            follow_ups_for_parent = sum(
+                1 for q in session.questions
+                if q.parent_question_id == current_question.id
+            )
+            
+            max_follow_ups = session.config.max_follow_ups_per_question
+            
+            should_try_follow_up = self.context_builder.should_follow_up(
+                context=ctx,
+                latest_score=latest_score,
+                latest_recommendation=latest_recommendation,
+                follow_ups_so_far=follow_ups_for_parent,
+                max_follow_ups=max_follow_ups,
+                questions_remaining=questions_remaining,
+            )
+            
+            if should_try_follow_up:
+                # Step 3: Generate follow-up sub-question via LLM
+                should_fu, fu_text, fu_purpose, fu_points = await self.question_generator.generate_followup_subquestion(
+                    parent_question_text=current_question.question_text,
+                    candidate_answer=answer_text,
+                    eval_score=latest_score,
+                    eval_recommendation=latest_recommendation,
+                    eval_strengths=evaluation.strengths,
+                    eval_improvements=evaluation.improvements,
+                    eval_follow_up=evaluation.follow_up_question,
+                    candidate_context=ctx,
+                    current_stage=current_stage,
+                    questions_remaining=questions_remaining,
+                    follow_ups_so_far=follow_ups_for_parent,
+                    max_follow_ups=max_follow_ups,
+                )
+                
+                if should_fu and fu_text:
+                    # Create and insert follow-up question
+                    follow_up_iq = InterviewQuestion(
+                        id=str(uuid.uuid4()),
+                        question_text=fu_text,
+                        stage=current_question.stage,
+                        difficulty=current_question.difficulty,
+                        category=current_question.category,
+                        purpose=fu_purpose or "Follow-up based on candidate answer",
+                        expected_answer_points=fu_points or [],
+                        duration_seconds=current_question.duration_seconds,
+                        status=QuestionStatus.PENDING,
+                        source="follow_up",
+                        parent_question_id=current_question.id,
+                        sub_question_number=follow_ups_for_parent + 1,
+                    )
+                    
+                    # Insert right after the just-answered question
+                    for i, q in enumerate(session.questions):
+                        if q.id == current_question.id:
+                            session.questions.insert(i + 1, follow_up_iq)
+                            break
+                    
+                    session.follow_up_count += 1
+                    logger.info(
+                        f"Session {session.id}: Inserted follow-up sub-question "
+                        f"({fu_purpose}) after Q{base_answered} "
+                        f"(total follow-ups: {session.follow_up_count})"
+                    )
+                    return  # Don't augment next question if we just inserted a follow-up
+            
+            # Step 4: No follow-up — augment the next base question in-place
+            next_q = session.current_question  # first PENDING question
+            if next_q and next_q.parent_question_id is None:
+                # Only augment base questions, not follow-ups
+                augmented_text, applied, reason = await self.question_generator.augment_question(
+                    question_text=next_q.question_text,
+                    question_stage=_get_enum_value(next_q.stage),
+                    question_purpose=next_q.purpose or "",
+                    candidate_context=ctx,
+                )
+                if applied:
+                    next_q.original_question_text = next_q.question_text
+                    next_q.question_text = augmented_text
+                    next_q.source = "augmented"
+                    logger.info(f"Session {session.id}: Augmented next question — {reason}")
+        
+        except Exception as e:
+            logger.error(f"Session {session.id}: Augmentation pipeline failed: {e}", exc_info=True)
+            # Graceful degradation — interview continues with unaugmented questions
+
     async def submit_answer(
         self,
         session_id: str,
@@ -1056,14 +1270,18 @@ class InterviewOrchestrator:
         # Update performance tracking
         self._update_performance_tracking(session, evaluation)
         
+        # Phase 7: Run augmentation pipeline (may insert follow-up or augment next question)
+        if session.config.enable_question_augmentation:
+            await self._run_augmentation_pipeline(session, evaluation, answer_text, current_question)
+        
         # Determine next action
         session.last_activity_at = datetime.utcnow()
         
-        # Check for follow-up
+        # Check for follow-up (legacy — Phase 7 handles this via augmentation pipeline now)
         follow_up_question = None
-        if session.config.enable_follow_ups and evaluation.follow_up_question:
-            # Could add follow-up logic here
-            follow_up_question = evaluation.follow_up_question
+        if not session.config.enable_question_augmentation:
+            if session.config.enable_follow_ups and evaluation.follow_up_question:
+                follow_up_question = evaluation.follow_up_question
         
         # Get next question
         next_question = session.current_question
@@ -1099,10 +1317,9 @@ class InterviewOrchestrator:
         # Persist session state after all mutations
         await self._save_session(session)
         
-        # Calculate progress
-        total_questions = len(session.questions)
-        answered = len(session.answers)
-        progress_percent = (answered / total_questions * 100) if total_questions > 0 else 0
+        # Calculate progress using base question counts (Phase 7)
+        base_answered, base_total = self._get_base_question_counts(session)
+        progress_percent = (base_answered / base_total * 100) if base_total > 0 else 0
         
         response = SubmitAnswerResponse(
             session_id=session_id,
@@ -1111,8 +1328,8 @@ class InterviewOrchestrator:
             next_question=next_question,
             follow_up_question=follow_up_question,
             current_stage=_get_enum_value(session.current_stage),
-            questions_answered=answered,
-            total_questions=total_questions,
+            questions_answered=base_answered,
+            total_questions=base_total,
             progress_percent=progress_percent,
             stage_changed=stage_changed,
             interview_complete=interview_complete,
@@ -1257,13 +1474,19 @@ class InterviewOrchestrator:
         # Update performance tracking
         self._update_performance_tracking(session, evaluation)
         
+        # Phase 7: Run augmentation pipeline (may insert follow-up or augment next question)
+        if session.config.enable_question_augmentation:
+            yield status_event("augmenting", "Adapting interview based on your responses...")
+            await self._run_augmentation_pipeline(session, evaluation, answer_text, current_question)
+        
         # Determine next action
         session.last_activity_at = datetime.utcnow()
         
-        # Check for follow-up
+        # Check for follow-up (legacy — Phase 7 handles this via augmentation pipeline now)
         follow_up_question = None
-        if session.config.enable_follow_ups and evaluation.follow_up_question:
-            follow_up_question = evaluation.follow_up_question
+        if not session.config.enable_question_augmentation:
+            if session.config.enable_follow_ups and evaluation.follow_up_question:
+                follow_up_question = evaluation.follow_up_question
         
         # Get next question
         next_question = session.current_question
@@ -1296,10 +1519,9 @@ class InterviewOrchestrator:
         # Persist session state
         await self._save_session(session)
         
-        # Calculate progress
-        total_questions = len(session.questions)
-        answered = len(session.answers)
-        progress_percent = (answered / total_questions * 100) if total_questions > 0 else 0
+        # Calculate progress using base question counts (Phase 7)
+        base_answered, base_total = self._get_base_question_counts(session)
+        progress_percent = (base_answered / base_total * 100) if base_total > 0 else 0
         
         response = SubmitAnswerResponse(
             session_id=session_id,
@@ -1308,8 +1530,8 @@ class InterviewOrchestrator:
             next_question=next_question,
             follow_up_question=follow_up_question,
             current_stage=_get_enum_value(session.current_stage),
-            questions_answered=answered,
-            total_questions=total_questions,
+            questions_answered=base_answered,
+            total_questions=base_total,
             progress_percent=progress_percent,
             stage_changed=stage_changed,
             interview_complete=interview_complete,
@@ -1329,9 +1551,10 @@ class InterviewOrchestrator:
                 "recommendation": evaluation.recommendation.value,
                 "stage_changed": stage_changed,
                 "interview_complete": interview_complete,
-                "questions_answered": answered,
-                "total_questions": total_questions,
+                "questions_answered": base_answered,
+                "total_questions": base_total,
                 "progress_percent": progress_percent,
+                "follow_up_count": session.follow_up_count,
                 "next_question": next_question.model_dump() if next_question else None,
             },
             message=response.message,

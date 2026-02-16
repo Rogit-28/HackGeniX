@@ -54,6 +54,8 @@ class QuestionSource(str, Enum):
     BANK_REPHRASED = "bank_rephrased"  # Bank question rephrased by LLM
     BANK_PERSONALIZED = "bank_personalized"  # Bank question personalized with resume
     GENERATED = "generated"            # Fully LLM-generated (gap-filling)
+    FOLLOW_UP = "follow_up"            # Phase 7: Follow-up sub-question based on candidate's answer
+    AUGMENTED = "augmented"            # Phase 7: Base question augmented with candidate context
 
 
 class BankQuestion(BaseModel):

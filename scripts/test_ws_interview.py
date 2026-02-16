@@ -148,6 +148,10 @@ class TestContext:
     session_id: Optional[str] = None
     first_question: Optional[Dict] = None
     ws_url: str = ""
+    # Phase 7 augmentation tracking
+    augmented_questions_seen: int = 0
+    follow_up_questions_seen: int = 0
+    max_follow_up_count: int = 0
 
 
 @dataclass
@@ -605,6 +609,7 @@ async def setup_start_interview(ctx: TestContext) -> bool:
                     "behavioral_questions": 1,
                     "system_design_questions": 0,
                     "difficulty": "medium",
+                    "enable_question_augmentation": True,
                 },
             },
         ) as response:
@@ -721,6 +726,15 @@ async def test_ws_connect(ctx: TestContext) -> bool:
     print(f"    stage: {question_msg.get('stage')}")
     print(f"    duration_seconds: {question_msg.get('duration_seconds')}")
     print(f"    question_number: {question_msg.get('question_number')}/{question_msg.get('total_questions')}")
+    # Phase 7 fields
+    print(f"    is_follow_up: {question_msg.get('is_follow_up', False)}")
+    if question_msg.get('sub_question_label'):
+        print(f"    sub_question_label: {question_msg.get('sub_question_label')}")
+    if question_msg.get('follow_up_count', 0) > 0:
+        print(f"    follow_up_count: {question_msg.get('follow_up_count')}")
+        ctx.max_follow_up_count = max(ctx.max_follow_up_count, question_msg.get('follow_up_count', 0))
+    if question_msg.get('is_follow_up'):
+        ctx.follow_up_questions_seen += 1
     print(f"  {PASS} Question message received")
 
     # TTS start
@@ -848,6 +862,10 @@ async def test_ws_connect(ctx: TestContext) -> bool:
             print(f"      questions_answered: {data.get('questions_answered')}/{data.get('total_questions')}")
             print(f"      stage_changed: {data.get('stage_changed')}")
             print(f"      interview_complete: {data.get('interview_complete')}")
+            # Phase 7 fields
+            if data.get('follow_up_count', 0) > 0:
+                print(f"      follow_up_count: {data.get('follow_up_count')}")
+                ctx.max_follow_up_count = max(ctx.max_follow_up_count, data.get('follow_up_count', 0))
             break  # evaluation is the terminal event for this question
 
         elif msg_type == "error":
@@ -915,6 +933,10 @@ async def test_ws_connect(ctx: TestContext) -> bool:
                 print(f"      overall_score: {data.get('overall_score')}")
                 print(f"      questions_answered: {data.get('questions_answered')}/{data.get('total_questions')}")
                 print(f"      interview_complete: {data.get('interview_complete')}")
+                # Phase 7 fields
+                if data.get('follow_up_count', 0) > 0:
+                    print(f"      follow_up_count: {data.get('follow_up_count')}")
+                    ctx.max_follow_up_count = max(ctx.max_follow_up_count, data.get('follow_up_count', 0))
                 break
 
             elif msg_type == "stage_change":
@@ -958,6 +980,15 @@ async def test_ws_connect(ctx: TestContext) -> bool:
     print(f"  Question 2: {q2_msg.get('question_text', '')[:80]}...")
     print(f"    stage: {q2_msg.get('stage')}")
     print(f"    question_number: {q2_msg.get('question_number')}/{q2_msg.get('total_questions')}")
+    # Phase 7 fields
+    print(f"    is_follow_up: {q2_msg.get('is_follow_up', False)}")
+    if q2_msg.get('sub_question_label'):
+        print(f"    sub_question_label: {q2_msg.get('sub_question_label')}")
+    if q2_msg.get('follow_up_count', 0) > 0:
+        print(f"    follow_up_count: {q2_msg.get('follow_up_count')}")
+        ctx.max_follow_up_count = max(ctx.max_follow_up_count, q2_msg.get('follow_up_count', 0))
+    if q2_msg.get('is_follow_up'):
+        ctx.follow_up_questions_seen += 1
 
     # Wait for TTS + listening
     listening_msg2, _, tts_binary2 = await ws_recv_until_type(
@@ -998,6 +1029,10 @@ async def test_ws_connect(ctx: TestContext) -> bool:
     print(f"    questions_answered: {eval2_msg.get('questions_answered')}/{eval2_msg.get('total_questions')}")
     print(f"    stage_changed: {eval2_msg.get('stage_changed')}")
     print(f"    interview_complete: {eval2_msg.get('interview_complete')}")
+    # Phase 7 fields
+    if eval2_msg.get('follow_up_count', 0) > 0:
+        print(f"    follow_up_count: {eval2_msg.get('follow_up_count')}")
+        ctx.max_follow_up_count = max(ctx.max_follow_up_count, eval2_msg.get('follow_up_count', 0))
     for im in eval2_intermediates:
         if im.get("type") == "transcript":
             print(f"    transcript echo: {im.get('text', '')[:60]}...")
@@ -1028,6 +1063,16 @@ async def test_ws_connect(ctx: TestContext) -> bool:
 
     print(f"  Question 3: {q3_msg.get('question_text', '')[:80]}...")
     print(f"    stage: {q3_msg.get('stage')}")
+    print(f"    question_number: {q3_msg.get('question_number')}/{q3_msg.get('total_questions')}")
+    # Phase 7 fields
+    print(f"    is_follow_up: {q3_msg.get('is_follow_up', False)}")
+    if q3_msg.get('sub_question_label'):
+        print(f"    sub_question_label: {q3_msg.get('sub_question_label')}")
+    if q3_msg.get('follow_up_count', 0) > 0:
+        print(f"    follow_up_count: {q3_msg.get('follow_up_count')}")
+        ctx.max_follow_up_count = max(ctx.max_follow_up_count, q3_msg.get('follow_up_count', 0))
+    if q3_msg.get('is_follow_up'):
+        ctx.follow_up_questions_seen += 1
 
     # Wait for listening
     listening_msg3, _, tts_binary3 = await ws_recv_until_type(
@@ -1077,6 +1122,10 @@ async def test_ws_connect(ctx: TestContext) -> bool:
             print(f"      overall_score: {data.get('overall_score')}")
             print(f"      questions_answered: {data.get('questions_answered')}/{data.get('total_questions')}")
             print(f"      interview_complete: {data.get('interview_complete')}")
+            # Phase 7 fields
+            if data.get('follow_up_count', 0) > 0:
+                print(f"      follow_up_count: {data.get('follow_up_count')}")
+                ctx.max_follow_up_count = max(ctx.max_follow_up_count, data.get('follow_up_count', 0))
 
         elif msg_type == "stage_change":
             print(f"      stage_change: {data.get('from_stage')} -> {data.get('to_stage')}")
@@ -1283,6 +1332,20 @@ async def main():
 
     print(f"\n  {passed_count}/{total} passed, {failed_count} failed, {skipped_count} skipped")
     print(f"  Total time: {elapsed:.1f}s")
+
+    # Phase 7: Augmentation summary
+    print("\n  --- Phase 7: Question Augmentation ---")
+    print(f"  enable_question_augmentation: True (explicitly set in config)")
+    print(f"  Follow-up questions seen: {ctx.follow_up_questions_seen}")
+    print(f"  Max follow_up_count reported: {ctx.max_follow_up_count}")
+    if ctx.follow_up_questions_seen > 0:
+        print(f"  {PASS} Follow-up sub-questions were generated by augmentation pipeline")
+    else:
+        print(f"  {INFO} No follow-up sub-questions generated (expected with only 3 base questions —")
+        print(f"         should_follow_up() returns False when questions_remaining < 3)")
+    print(f"  {INFO} Question augmentation (text modification) happens server-side;")
+    print(f"         check question_text in logs above to verify questions were contextually adapted")
+
     print("=" * 70)
 
     if failed_count > 0:

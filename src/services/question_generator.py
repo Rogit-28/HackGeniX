@@ -32,6 +32,8 @@ from src.services.prompts import (
     ENHANCE_BANK_QUESTION_PROMPT,
     GAP_FILLING_QUESTION_PROMPT,
     BATCH_ENHANCE_QUESTIONS_PROMPT,
+    AUGMENT_QUESTION_PROMPT,
+    GENERATE_FOLLOWUP_SUBQUESTION_PROMPT,
 )
 from src.models.documents import ParsedResume, ParsedJobDescription
 from src.models.question_bank import (
@@ -41,6 +43,7 @@ from src.models.question_bank import (
     InterviewStageHint,
     EnrichedQuestion,
 )
+from src.services.candidate_context import CandidateContext
 
 logger = logging.getLogger(__name__)
 
@@ -601,6 +604,199 @@ class QuestionGenerator:
         )
         return await self.generate_questions(request, resume, jd)
     
+    # =========================================================================
+    # Phase 7: Question Augmentation Methods
+    # =========================================================================
+
+    async def augment_question(
+        self,
+        question_text: str,
+        question_stage: str,
+        question_purpose: str,
+        candidate_context: CandidateContext,
+    ) -> tuple:
+        """
+        Augment a pre-generated question with candidate context.
+
+        Modifies the question text to reference prior answers, making the
+        interview feel conversational.  Preserves the core intent and
+        difficulty of the original question.
+
+        Args:
+            question_text: Original question text to augment.
+            question_stage: Stage name (e.g. "technical").
+            question_purpose: Purpose string from the question.
+            candidate_context: Current candidate context profile.
+
+        Returns:
+            Tuple of (augmented_text: str, augmentation_applied: bool, reason: str).
+            If augmentation fails or has no meaningful connection, returns
+            the original text unchanged.
+        """
+        context_section = candidate_context.to_prompt_section()
+
+        prompt = AUGMENT_QUESTION_PROMPT.format(
+            original_question=question_text,
+            question_stage=question_stage,
+            question_purpose=question_purpose or "General assessment",
+            candidate_context=context_section,
+        )
+
+        messages = [
+            system_message(
+                "You are an expert interviewer adapting questions for conversational flow. "
+                "Output ONLY valid JSON, no markdown fences."
+            ),
+            user_message(prompt),
+        ]
+
+        try:
+            response = await self.llm.generate(
+                messages,
+                GenerationConfig(max_tokens=512, temperature=0.5),
+            )
+
+            result = self._parse_json_object(response.content)
+            if result:
+                augmented = result.get("augmented_question", "").strip()
+                applied = result.get("augmentation_applied", False)
+                reason = result.get("augmentation_reason", "")
+
+                if augmented and applied:
+                    logger.info(f"Question augmented: {reason}")
+                    return augmented, True, reason
+
+            # No augmentation applied or parse failed
+            return question_text, False, "No augmentation applied"
+
+        except Exception as e:
+            logger.error(f"Question augmentation failed: {e}")
+            return question_text, False, f"Augmentation failed: {e}"
+
+    async def generate_followup_subquestion(
+        self,
+        parent_question_text: str,
+        candidate_answer: str,
+        eval_score: float,
+        eval_recommendation: str,
+        eval_strengths: list,
+        eval_improvements: list,
+        eval_follow_up: str,
+        candidate_context: CandidateContext,
+        current_stage: str,
+        questions_remaining: int,
+        follow_ups_so_far: int,
+        max_follow_ups: int,
+    ) -> tuple:
+        """
+        Generate a follow-up sub-question based on the candidate's answer.
+
+        The LLM decides whether a follow-up is warranted AND generates the
+        question in a single call.
+
+        Args:
+            parent_question_text: The question that was just answered.
+            candidate_answer: The candidate's answer text.
+            eval_score: Evaluation overall score.
+            eval_recommendation: Evaluation recommendation string.
+            eval_strengths: List of strength strings from evaluation.
+            eval_improvements: List of improvement strings from evaluation.
+            eval_follow_up: Evaluator's suggested follow-up (may be None).
+            candidate_context: Current candidate context profile.
+            current_stage: Current interview stage.
+            questions_remaining: Base questions remaining.
+            follow_ups_so_far: Follow-ups already asked for this parent.
+            max_follow_ups: Max follow-ups per question.
+
+        Returns:
+            Tuple of (should_follow_up: bool, question_text: str | None,
+                       purpose: str | None, expected_points: list).
+        """
+        context_section = candidate_context.to_prompt_section()
+
+        prompt = GENERATE_FOLLOWUP_SUBQUESTION_PROMPT.format(
+            parent_question=parent_question_text,
+            candidate_answer=candidate_answer[:1000],  # cap for prompt size
+            eval_score=eval_score,
+            eval_recommendation=eval_recommendation,
+            eval_strengths="; ".join(eval_strengths) if eval_strengths else "None identified",
+            eval_improvements="; ".join(eval_improvements) if eval_improvements else "None identified",
+            eval_follow_up=eval_follow_up or "None suggested",
+            candidate_context=context_section,
+            current_stage=current_stage,
+            questions_remaining=questions_remaining,
+            follow_ups_so_far=follow_ups_so_far,
+            max_follow_ups=max_follow_ups,
+        )
+
+        messages = [
+            system_message(
+                "You are an expert interviewer deciding on follow-up questions. "
+                "Output ONLY valid JSON, no markdown fences."
+            ),
+            user_message(prompt),
+        ]
+
+        try:
+            response = await self.llm.generate(
+                messages,
+                GenerationConfig(max_tokens=512, temperature=0.4),
+            )
+
+            result = self._parse_json_object(response.content)
+            if result:
+                should = result.get("should_follow_up", False)
+                if should:
+                    q_text = result.get("follow_up_question", "").strip()
+                    purpose = result.get("purpose", "")
+                    points = result.get("expected_answer_points", [])
+                    reason = result.get("trigger_reason", "")
+                    if q_text:
+                        logger.info(f"Follow-up generated: {reason}")
+                        return True, q_text, purpose, points
+                    else:
+                        logger.warning("LLM said should_follow_up=true but gave empty question")
+                        return False, None, None, []
+                else:
+                    return False, None, None, []
+
+            return False, None, None, []
+
+        except Exception as e:
+            logger.error(f"Follow-up generation failed: {e}")
+            return False, None, None, []
+
+    def _parse_json_object(self, response: str) -> dict:
+        """Parse a single JSON object from LLM response."""
+        text = response.strip()
+
+        # Strip markdown fences
+        if "```json" in text:
+            start = text.find("```json") + 7
+            end = text.find("```", start)
+            text = text[start:end].strip()
+        elif "```" in text:
+            start = text.find("```") + 3
+            end = text.find("```", start)
+            text = text[start:end].strip()
+
+        # Find JSON object bounds
+        if not text.startswith("{"):
+            start = text.find("{")
+            if start != -1:
+                text = text[start:]
+        if not text.endswith("}"):
+            end = text.rfind("}")
+            if end != -1:
+                text = text[: end + 1]
+
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON object: {e}")
+            logger.debug(f"Response was: {text[:500]}")
+            return {}
+
     # =========================================================================
     # Phase 6.5: Hybrid Question Generation Methods
     # =========================================================================

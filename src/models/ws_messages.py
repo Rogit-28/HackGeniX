@@ -135,6 +135,11 @@ class QuestionMessage(ServerMessage):
     category: Optional[str] = None
     purpose: Optional[str] = None
     has_tts: bool = True  # whether TTS will follow
+    # Phase 7: Follow-up sub-question metadata
+    is_follow_up: bool = False
+    parent_question_id: Optional[str] = None
+    sub_question_label: Optional[str] = None  # e.g. "Q3a", "Q3b"
+    follow_up_count: int = 0  # total follow-ups asked so far
 
 
 class TTSStartMessage(ServerMessage):
@@ -191,6 +196,8 @@ class EvaluationMessage(ServerMessage):
     stage_changed: bool = False
     interview_complete: bool = False
     next_stage: Optional[str] = None
+    # Phase 7: follow-up tracking
+    follow_up_count: int = 0
 
 
 class StageChangeMessage(ServerMessage):

@@ -122,8 +122,19 @@ def _question_to_msg(
     question: InterviewQuestion,
     question_number: int,
     total_questions: int,
+    follow_up_count: int = 0,
 ) -> QuestionMessage:
-    """Convert an InterviewQuestion to a QuestionMessage."""
+    """Convert an InterviewQuestion to a QuestionMessage.
+    
+    For follow-up sub-questions, generates a label like "Q3a", "Q3b" etc.
+    """
+    is_follow_up = question.parent_question_id is not None
+    sub_label = None
+    if is_follow_up and question.sub_question_number:
+        # Convert sub_question_number to letter suffix: 1->a, 2->b, etc.
+        suffix = chr(ord('a') + question.sub_question_number - 1)
+        sub_label = f"Q{question_number}{suffix}"
+    
     return QuestionMessage(
         question_id=question.id,
         question_text=question.question_text,
@@ -135,6 +146,10 @@ def _question_to_msg(
         category=question.category,
         purpose=question.purpose,
         has_tts=True,
+        is_follow_up=is_follow_up,
+        parent_question_id=question.parent_question_id,
+        sub_question_label=sub_label,
+        follow_up_count=follow_up_count,
     )
 
 
@@ -312,19 +327,26 @@ async def interview_websocket(
         return
 
     # --- Send connected handshake ---
+    # Use base question counts (Phase 7: exclude follow-up sub-questions)
+    base_total = sum(1 for q in session.questions if q.parent_question_id is None)
+    base_answered = sum(
+        1 for q in session.questions
+        if q.parent_question_id is None
+        and (q.status if isinstance(q.status, str) else q.status.value) == "answered"
+    )
     await _send_json(ws, ConnectedMessage(
         session_id=session_id,
         candidate_name=session.candidate_name,
         role_title=session.role_title,
         current_stage=session.current_stage if isinstance(session.current_stage, str) else session.current_stage.value,
-        total_questions=len(session.questions),
-        questions_answered=len(session.answers),
+        total_questions=base_total,
+        questions_answered=base_answered,
     ))
 
     logger.info(
         f"WS connected: session={session_id}, "
         f"candidate={session.candidate_name}, "
-        f"question={len(session.answers)+1}/{len(session.questions)}"
+        f"question={base_answered+1}/{base_total}"
     )
 
     # --- State ---
@@ -350,11 +372,34 @@ async def interview_websocket(
         nonlocal current_q, is_recording, audio_buffer, answer_timer_task
 
         current_q = question
-        question_number = len(session.answers) + 1
+        
+        # Phase 7: Compute base question number (excluding follow-ups)
+        # Reload session to get latest state
+        s = await orchestrator.get_session(session_id)
+        base_answered_count = sum(
+            1 for q in s.questions
+            if q.parent_question_id is None
+            and (q.status if isinstance(q.status, str) else q.status.value) == "answered"
+        )
+        base_total_count = sum(1 for q in s.questions if q.parent_question_id is None)
+        
+        # For follow-ups, question_number stays as the parent's base number
+        if question.parent_question_id is not None:
+            # Find the base question number of the parent
+            base_num = 0
+            for q in s.questions:
+                if q.parent_question_id is None:
+                    base_num += 1
+                if q.id == question.parent_question_id:
+                    break
+            question_number = base_num
+        else:
+            question_number = base_answered_count + 1
 
         # Send question metadata
         await _send_json(ws, _question_to_msg(
-            question, question_number, len(session.questions),
+            question, question_number, base_total_count,
+            follow_up_count=s.follow_up_count,
         ))
 
         # Stream TTS audio
@@ -474,6 +519,7 @@ async def interview_websocket(
             stage_changed=response.stage_changed,
             interview_complete=response.interview_complete,
             next_stage=response.current_stage if response.stage_changed else None,
+            follow_up_count=session_refreshed.follow_up_count if session_refreshed else 0,
         ))
 
         # Stage change notification
@@ -596,6 +642,7 @@ async def interview_websocket(
                             stage_changed=response.stage_changed,
                             interview_complete=response.interview_complete,
                             next_stage=response.current_stage if response.stage_changed else None,
+                            follow_up_count=session_refreshed.follow_up_count if session_refreshed else 0,
                         ))
 
                         if response.stage_changed:
@@ -698,6 +745,7 @@ async def interview_websocket(
                         stage_changed=response.stage_changed,
                         interview_complete=response.interview_complete,
                         next_stage=response.current_stage if response.stage_changed else None,
+                        follow_up_count=session_refreshed.follow_up_count if session_refreshed else 0,
                     ))
 
                     if response.stage_changed:
