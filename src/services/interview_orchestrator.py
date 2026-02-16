@@ -872,14 +872,14 @@ class InterviewOrchestrator:
         """Synthesize audio for a question using TTS."""
         try:
             tts = await self._get_tts_provider()
-            audio_data = await tts.synthesize(
+            synthesis_result = await tts.synthesize(
                 text=question.question_text,
-                voice=config.tts_voice,
+                voice_id=config.tts_voice,
             )
             
             # Save to temp file
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                f.write(audio_data)
+                f.write(synthesis_result.audio_data)
                 question.audio_path = f.name
                 return f.name
                 

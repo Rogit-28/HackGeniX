@@ -35,7 +35,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.core.config import get_settings
 from src.core.database import mongodb_client
 from src.core.storage import storage_client
-from src.api import health, documents, interviews, questions, voice, sessions, reports
+from src.api import health, documents, interviews, questions, voice, sessions, reports, ws_interview
 from src.api.middleware import AuthMiddleware
 
 # Configure logging
@@ -130,6 +130,7 @@ def create_app() -> FastAPI:
     app.include_router(voice.router, tags=["Voice"])
     app.include_router(sessions.router, tags=["Sessions"])
     app.include_router(reports.router, tags=["Reports"])
+    app.include_router(ws_interview.router, tags=["WebSocket Interview"])
     
     return app
 
