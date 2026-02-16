@@ -1090,8 +1090,10 @@ async def test_ws_connect(ctx: TestContext) -> bool:
             break
 
         elif msg_type == "question":
-            # Unexpected — there shouldn't be a 4th question
-            print(f"      Unexpected question 4: {data.get('question_text', '')[:60]}...")
+            # Q4 (wrap-up) may arrive after skip — this is expected when
+            # the session has more questions beyond the skipped one
+            print(f"      Next question: {data.get('question_text', '')[:60]}...")
+            print(f"      (wrap-up/extra question — will end interview)")
             break
 
     if got_skip_eval:

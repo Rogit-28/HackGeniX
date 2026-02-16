@@ -564,10 +564,40 @@ async def interview_websocket(
                         response = await _evaluate_and_advance(
                             ws, session_id, "(Question skipped by candidate)",
                         )
-                        if response and response.next_question:
-                            await _send_question_and_listen(response.next_question)
-                        elif response and response.interview_complete:
-                            s = await orchestrator.get_session(session_id)
+                        if not response:
+                            continue
+
+                        # Send evaluation results for skipped question
+                        eval_data = response.evaluation or {}
+                        eval_scores = eval_data.get("scores", {})
+                        session_refreshed = await orchestrator.get_session(session_id)
+                        latest_answer = session_refreshed.answers[-1] if session_refreshed and session_refreshed.answers else None
+
+                        await _send_json(ws, EvaluationMessage(
+                            overall_score=eval_scores.get("overall", 0),
+                            scores=eval_scores,
+                            strengths=latest_answer.strengths if latest_answer else [],
+                            improvements=latest_answer.improvements if latest_answer else [],
+                            recommendation=latest_answer.recommendation if latest_answer else "acceptable",
+                            follow_up_question=latest_answer.follow_up_question if latest_answer else None,
+                            questions_answered=response.questions_answered,
+                            total_questions=response.total_questions,
+                            progress_percent=response.progress_percent,
+                            stage_changed=response.stage_changed,
+                            interview_complete=response.interview_complete,
+                            next_stage=response.current_stage if response.stage_changed else None,
+                        ))
+
+                        if response.stage_changed:
+                            old_stage = current_q.stage if isinstance(current_q.stage, str) else current_q.stage.value
+                            await _send_json(ws, StageChangeMessage(
+                                from_stage=old_stage,
+                                to_stage=response.current_stage,
+                                message=f"Moving to {response.current_stage.replace('_', ' ')} stage",
+                            ))
+
+                        if response.interview_complete:
+                            s = session_refreshed or session
                             await _send_json(ws, InterviewCompleteMessage(
                                 session_id=session_id,
                                 overall_score=s.overall_score if s else 0,
@@ -577,6 +607,9 @@ async def interview_websocket(
                             ))
                             await ws.close(code=1000, reason="Interview complete")
                             return
+
+                        if response.next_question:
+                            await _send_question_and_listen(response.next_question)
                         continue
 
                     if action == ControlAction.END_INTERVIEW.value:
