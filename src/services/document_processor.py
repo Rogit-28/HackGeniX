@@ -368,7 +368,7 @@ class DocumentProcessor:
         caller always gets a result or an error event.
         """
         from src.services.streaming import (
-            StreamEvent, status_event, progress_event,
+            StreamEvent, EventType, status_event, progress_event,
             result_event, error_event, done_event,
             stream_llm_generation,
         )
@@ -419,17 +419,16 @@ class DocumentProcessor:
                 user_message(prompt),
             ]
 
-            config = GenerationConfig(max_tokens=4096, temperature=0.1, json_mode=True)
+            config = GenerationConfig(max_tokens=4096, temperature=0.1, json_mode=False)
 
             yield status_event("parsing", "Analyzing resume with AI...")
 
             # Stream tokens, accumulate the full response
             accumulated: list[str] = []
-            async for item in stream_llm_generation(llm, messages, config, stage="parsing"):
-                if isinstance(item, StreamEvent):
-                    yield item  # forward progress events
-                else:
-                    accumulated.append(item)  # raw token
+            async for event in stream_llm_generation(llm, messages, config, stage="parsing"):
+                if event.type == EventType.TOKEN:
+                    accumulated.append(event.data["content"])
+                yield event  # forward all events (token, progress, status)
 
             full_response = "".join(accumulated)
 
@@ -441,13 +440,12 @@ class DocumentProcessor:
             if not data:
                 # Retry with temperature=0
                 yield status_event("retry", "Retrying with stricter parameters...")
-                config_retry = GenerationConfig(max_tokens=4096, temperature=0.0, json_mode=True)
+                config_retry = GenerationConfig(max_tokens=4096, temperature=0.0, json_mode=False)
                 accumulated = []
-                async for item in stream_llm_generation(llm, messages, config_retry, stage="retry"):
-                    if isinstance(item, StreamEvent):
-                        yield item
-                    else:
-                        accumulated.append(item)
+                async for event in stream_llm_generation(llm, messages, config_retry, stage="retry"):
+                    if event.type == EventType.TOKEN:
+                        accumulated.append(event.data["content"])
+                    yield event
                 full_response = "".join(accumulated)
                 data = self._parse_llm_json_response(full_response)
 
@@ -489,7 +487,7 @@ class DocumentProcessor:
         Same pattern as ``parse_resume_with_llm_stream``.
         """
         from src.services.streaming import (
-            StreamEvent, status_event, progress_event,
+            StreamEvent, EventType, status_event, progress_event,
             result_event, error_event, done_event,
             stream_llm_generation,
         )
@@ -536,16 +534,15 @@ class DocumentProcessor:
                 user_message(prompt),
             ]
 
-            config = GenerationConfig(max_tokens=2048, temperature=0.1, json_mode=True)
+            config = GenerationConfig(max_tokens=2048, temperature=0.1, json_mode=False)
 
             yield status_event("parsing", "Analyzing job description with AI...")
 
             accumulated: list[str] = []
-            async for item in stream_llm_generation(llm, messages, config, stage="parsing"):
-                if isinstance(item, StreamEvent):
-                    yield item
-                else:
-                    accumulated.append(item)
+            async for event in stream_llm_generation(llm, messages, config, stage="parsing"):
+                if event.type == EventType.TOKEN:
+                    accumulated.append(event.data["content"])
+                yield event
 
             full_response = "".join(accumulated)
 
@@ -555,13 +552,12 @@ class DocumentProcessor:
 
             if not data:
                 yield status_event("retry", "Retrying with stricter parameters...")
-                config_retry = GenerationConfig(max_tokens=2048, temperature=0.0, json_mode=True)
+                config_retry = GenerationConfig(max_tokens=2048, temperature=0.0, json_mode=False)
                 accumulated = []
-                async for item in stream_llm_generation(llm, messages, config_retry, stage="retry"):
-                    if isinstance(item, StreamEvent):
-                        yield item
-                    else:
-                        accumulated.append(item)
+                async for event in stream_llm_generation(llm, messages, config_retry, stage="retry"):
+                    if event.type == EventType.TOKEN:
+                        accumulated.append(event.data["content"])
+                    yield event
                 full_response = "".join(accumulated)
                 data = self._parse_llm_json_response(full_response)
 

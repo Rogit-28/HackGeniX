@@ -379,7 +379,8 @@ class QuestionGenerator:
             List[GeneratedQuestion] as the final item
         """
         from src.services.streaming import (
-            StreamEvent, status_event, progress_event, error_event,
+            StreamEvent, EventType, status_event, progress_event, error_event,
+            stream_llm_generation,
         )
         
         stage = request.stage
@@ -428,8 +429,15 @@ class QuestionGenerator:
         ]
         
         try:
-            response = await self.llm.generate(messages, self._generation_config)
-            questions_data = self._parse_llm_json_response(response.content)
+            # Stream tokens from LLM, accumulate full response
+            accumulated: list[str] = []
+            async for event in stream_llm_generation(self.llm, messages, self._generation_config, stage=f"generating_{stage_name}"):
+                if event.type == EventType.TOKEN:
+                    accumulated.append(event.data["content"])
+                yield event  # forward all events (token, progress, status)
+
+            full_response = "".join(accumulated)
+            questions_data = self._parse_llm_json_response(full_response)
             
             questions = []
             for q_data in questions_data:

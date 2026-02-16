@@ -41,6 +41,7 @@ class EventType(str, Enum):
     RESULT = "result"
     ERROR = "error"
     DONE = "done"
+    TOKEN = "token"
 
 
 @dataclass
@@ -118,6 +119,16 @@ def done_event(message: str = "Stream complete") -> StreamEvent:
     return StreamEvent(type=EventType.DONE, stage="done", message=message)
 
 
+def token_event(stage: str, content: str) -> StreamEvent:
+    """Create a token event (single LLM token for typewriter streaming)."""
+    return StreamEvent(
+        type=EventType.TOKEN,
+        stage=stage,
+        message=content,
+        data={"content": content},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Streaming LLM helper
 # ---------------------------------------------------------------------------
@@ -128,25 +139,25 @@ async def stream_llm_generation(
     config=None,
     stage: str = "generating",
     progress_interval: int = 50,
-) -> AsyncIterator[StreamEvent | str]:
-    """Stream tokens from an LLM provider, yielding progress events periodically.
+) -> AsyncIterator[StreamEvent]:
+    """Stream tokens from an LLM provider, yielding token and progress events.
 
     This is a wrapper around ``provider.generate_stream()`` that:
-    1. Yields ``StreamEvent`` progress updates every *progress_interval* tokens.
-    2. Yields raw token strings so the caller can accumulate the full response.
+    1. Yields ``token_event`` for every token so the frontend can display
+       a typewriter effect.
+    2. Yields ``progress_event`` updates every *progress_interval* tokens.
     3. Yields a final progress event with the total token count.
 
-    The caller is responsible for converting the accumulated text into a
-    ``result_event`` (since it knows the domain — parsed resume, questions, etc.).
+    The caller accumulates the full response by collecting the ``content``
+    field from TOKEN events (``event.data["content"]``).
 
     Usage::
 
         accumulated = []
-        async for item in stream_llm_generation(provider, msgs, cfg, "parsing"):
-            if isinstance(item, StreamEvent):
-                yield item.to_sse()   # forward to SSE client
-            else:
-                accumulated.append(item)  # raw token string
+        async for event in stream_llm_generation(provider, msgs, cfg, "parsing"):
+            if event.type == EventType.TOKEN:
+                accumulated.append(event.data["content"])
+            yield event          # forward everything to SSE client
         full_text = "".join(accumulated)
     """
     token_count = 0
@@ -157,8 +168,8 @@ async def stream_llm_generation(
     try:
         async for token in llm_provider.generate_stream(messages, config):
             token_count += 1
-            # Yield the raw token for accumulation
-            yield token
+            # Yield a token event for typewriter streaming
+            yield token_event(stage, token)
             # Periodic progress events
             if token_count % progress_interval == 0:
                 elapsed = time.perf_counter() - start

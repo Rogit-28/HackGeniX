@@ -615,7 +615,7 @@ class SemanticMatcher:
         and a final MatchResult as the last item.
         """
         from src.services.streaming import (
-            StreamEvent, status_event, progress_event,
+            StreamEvent, EventType, status_event, progress_event,
             result_event, error_event, done_event,
             stream_llm_generation,
         )
@@ -640,30 +640,148 @@ class SemanticMatcher:
             missing_skills=missing_skills,
         )
 
-        # --- Stage 2: LLM fit assessment (optional) ---
+        # --- Stage 2: LLM fit assessment (optional, now with token streaming) ---
         llm_result: Optional[Dict[str, Any]] = None
         run_llm = use_llm and self.llm_enabled
 
         if run_llm:
             yield status_event("llm_assessment", "Running AI fit assessment...")
 
-            llm_result = await self.compute_llm_fit_assessment(
-                resume=resume,
-                job_description=job_description,
-                semantic_score=semantic_score,
-                skill_score=skill_score,
-                experience_score=experience_score,
-                matched_skills=matched_skills,
-                missing_skills=missing_skills,
-            )
+            try:
+                from src.providers.llm import LLMProviderFactory
+                from src.providers.llm.base import GenerationConfig, user_message as um, system_message as sm
+                from src.services.prompts import LLM_MATCH_ASSESSMENT_PROMPT
 
-            if llm_result:
+                llm = LLMProviderFactory.create(
+                    provider_type=self.matching_provider,
+                    model=self.matching_model,
+                )
+
+                # ----- Format resume sections -----
+                experience_lines = []
+                for exp in resume.experience:
+                    parts = []
+                    if exp.title:
+                        parts.append(exp.title)
+                    if exp.company:
+                        parts.append(f"@ {exp.company}")
+                    dates = ""
+                    if exp.start_date:
+                        dates = exp.start_date
+                    if exp.end_date:
+                        dates += f" - {exp.end_date}"
+                    if dates:
+                        parts.append(f"({dates})")
+                    header = " ".join(parts)
+                    bullets = "; ".join(exp.highlights[:4]) if exp.highlights else (exp.description or "")
+                    experience_lines.append(f"- {header}: {bullets}" if bullets else f"- {header}")
+
+                project_lines = []
+                for proj in resume.projects:
+                    name = proj.name or "Unnamed project"
+                    desc = proj.description or ""
+                    tech = ", ".join(proj.tech_stack) if proj.tech_stack else ""
+                    line = f"- {name}: {desc}"
+                    if tech:
+                        line += f" [{tech}]"
+                    project_lines.append(line)
+
+                research_lines = []
+                for res in resume.research:
+                    title = res.title or "Untitled"
+                    venue = f" ({res.venue})" if res.venue else ""
+                    highlights = "; ".join(res.highlights[:2]) if res.highlights else ""
+                    line = f"- {title}{venue}"
+                    if highlights:
+                        line += f": {highlights}"
+                    research_lines.append(line)
+
+                responsibilities_lines = [f"- {r}" for r in job_description.responsibilities[:8]]
+                qualifications_lines = [f"- {q}" for q in job_description.qualifications[:8]]
+
+                prompt = LLM_MATCH_ASSESSMENT_PROMPT.format(
+                    semantic_score=f"{semantic_score:.1f}",
+                    skill_score=f"{skill_score:.1f}",
+                    experience_score=f"{experience_score:.1f}",
+                    matched_skills=", ".join(matched_skills) if matched_skills else "none",
+                    missing_skills=", ".join(missing_skills) if missing_skills else "none",
+                    resume_skills=", ".join(resume.skills) if resume.skills else "none listed",
+                    resume_experience="\n".join(experience_lines) if experience_lines else "No experience listed",
+                    resume_projects="\n".join(project_lines) if project_lines else "No projects listed",
+                    resume_research="\n".join(research_lines) if research_lines else "No research listed",
+                    resume_interests=", ".join(resume.areas_of_interest) if resume.areas_of_interest else "none listed",
+                    jd_title=job_description.title or "Unknown",
+                    jd_required_skills=", ".join(job_description.required_skills) if job_description.required_skills else "none listed",
+                    jd_preferred_skills=", ".join(job_description.preferred_skills) if job_description.preferred_skills else "none listed",
+                    jd_responsibilities="\n".join(responsibilities_lines) if responsibilities_lines else "Not specified",
+                    jd_qualifications="\n".join(qualifications_lines) if qualifications_lines else "Not specified",
+                )
+
+                messages = [
+                    sm(
+                        "You are a hiring assessment engine. Return ONLY valid JSON. "
+                        "No markdown fences, no commentary."
+                    ),
+                    um(prompt),
+                ]
+
+                llm_config = GenerationConfig(
+                    max_tokens=self.matching_max_tokens,
+                    temperature=self.matching_temperature,
+                    json_mode=False,
+                )
+
+                # Stream tokens, accumulate, parse JSON
+                accumulated: list[str] = []
+                async for event in stream_llm_generation(llm, messages, llm_config, stage="llm_assessment"):
+                    if event.type == EventType.TOKEN:
+                        accumulated.append(event.data["content"])
+                    yield event  # forward all events (token, progress, status)
+
+                full_response = "".join(accumulated)
+
+                # Parse JSON from accumulated response
+                raw = full_response.strip()
+                if raw.startswith("```"):
+                    raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+                    if raw.endswith("```"):
+                        raw = raw[:-3]
+                    raw = raw.strip()
+
+                data = json.loads(raw)
+
+                fit_score = data.get("fit_score")
+                if fit_score is not None:
+                    fit_score = max(0, min(100, int(fit_score)))
+                    llm_result = {
+                        "fit_score": float(fit_score),
+                        "reasoning": data.get("reasoning", ""),
+                        "transferable_skills": data.get("transferable_skills", []),
+                        "experience_quality": data.get("experience_quality"),
+                        "experience_quality_reasoning": data.get("experience_quality_reasoning"),
+                        "risk_flags": data.get("risk_flags", []),
+                        "strengths": data.get("strengths", []),
+                    }
+                    yield progress_event(
+                        "llm_assessment",
+                        f"AI fit score: {fit_score}",
+                        fit_score=float(fit_score),
+                    )
+                else:
+                    logger.warning("LLM response missing fit_score")
+                    yield progress_event(
+                        "llm_assessment",
+                        "AI assessment returned no fit score, using algorithmic scores only",
+                    )
+
+            except json.JSONDecodeError as e:
+                logger.warning(f"LLM returned invalid JSON for fit assessment: {e}")
                 yield progress_event(
                     "llm_assessment",
-                    f"AI fit score: {llm_result['fit_score']:.0f}",
-                    fit_score=llm_result["fit_score"],
+                    "AI assessment unavailable, using algorithmic scores only",
                 )
-            else:
+            except Exception as e:
+                logger.warning(f"LLM fit assessment failed: {e}")
                 yield progress_event(
                     "llm_assessment",
                     "AI assessment unavailable, using algorithmic scores only",
