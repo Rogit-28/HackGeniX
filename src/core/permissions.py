@@ -71,12 +71,14 @@ ROLE_PERMISSIONS: dict[UserRole, List[str]] = {
         Permissions.VIEW_INTERVIEW,
         Permissions.UPDATE_INTERVIEW,
         Permissions.DELETE_INTERVIEW,
+        Permissions.CONDUCT_INTERVIEW,
         
         # Session management
         Permissions.CREATE_SESSION,
         Permissions.VIEW_SESSION,
         Permissions.UPDATE_SESSION,
         Permissions.DELETE_SESSION,
+        Permissions.PARTICIPATE_SESSION,
         
         # Candidate management
         Permissions.CREATE_CANDIDATE,
@@ -98,6 +100,9 @@ ROLE_PERMISSIONS: dict[UserRole, List[str]] = {
         Permissions.VIEW_REPORTS,
         Permissions.CREATE_REPORTS,
         Permissions.EXPORT_REPORTS,
+        
+        # Voice/Audio
+        Permissions.USE_VOICE,
         
         # Analysis
         Permissions.RUN_ANALYSIS,

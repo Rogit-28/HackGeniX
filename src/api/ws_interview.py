@@ -41,6 +41,8 @@ from starlette.websockets import WebSocketState
 
 from src.core.auth import decode_token, get_auth_config
 from src.core.config import get_settings
+from src.core.permissions import Permissions, get_permissions_for_role
+from src.models.auth import AuthenticatedUser, UserRole
 from src.models.interview import (
     InterviewMode,
     InterviewQuestion,
@@ -96,11 +98,17 @@ async def _send_error(ws: WebSocket, message: str, recoverable: bool = True) -> 
     return await _send_json(ws, ErrorMessage(message=message, recoverable=recoverable))
 
 
-async def _authenticate_ws(ws: WebSocket, token: Optional[str]) -> bool:
+async def _authenticate_ws(ws: WebSocket, token: Optional[str], session_id: str) -> bool:
     """Validate JWT for WebSocket connections.
 
-    Returns True if auth passes (or auth is disabled).
-    Sends an error and closes the socket on failure.
+    Checks:
+      1. Auth is enabled (bypasses if disabled).
+      2. Token is present and valid (signature + expiry).
+      3. User has PARTICIPATE_SESSION or CONDUCT_INTERVIEW permission (or ALL).
+      4. User can access the specific session (admin/hiring_manager: any;
+         candidate: only their scoped session; interviewer: via explicit grant).
+
+    Returns True if auth passes. Sends an error and closes the socket on failure.
     """
     settings = get_settings()
     if not settings.auth_enabled:
@@ -111,11 +119,54 @@ async def _authenticate_ws(ws: WebSocket, token: Optional[str]) -> bool:
         return False
 
     try:
-        decode_token(token)
-        return True
+        token_payload = decode_token(token)
     except Exception as exc:
         await ws.close(code=4003, reason=f"Authentication failed: {exc}")
         return False
+
+    # Resolve permissions
+    if token_payload.permissions:
+        effective_permissions = token_payload.permissions
+    else:
+        effective_permissions = get_permissions_for_role(token_payload.role)
+
+    # Check permission: must have participate_session, conduct_interview, or all
+    has_perm = (
+        Permissions.ALL in effective_permissions
+        or Permissions.PARTICIPATE_SESSION in effective_permissions
+        or Permissions.CONDUCT_INTERVIEW in effective_permissions
+    )
+    if not has_perm:
+        logger.warning(
+            f"WS auth denied: user={token_payload.sub} role={token_payload.role.value} "
+            f"lacks interview permission for session={session_id}"
+        )
+        await _send_error(ws, "You don't have permission to join interviews", recoverable=False)
+        await ws.close(code=4003, reason="Insufficient permissions")
+        return False
+
+    # Build AuthenticatedUser to check session access
+    user = AuthenticatedUser(
+        user_id=token_payload.sub,
+        role=token_payload.role,
+        permissions=effective_permissions,
+        session_id=token_payload.session_id,
+        name=token_payload.name,
+        email=token_payload.email,
+        token_exp=token_payload.exp,
+        token_iss=token_payload.iss,
+    )
+
+    if not user.can_access_session(session_id):
+        logger.warning(
+            f"WS auth denied: user={user.user_id} role={user.role.value} "
+            f"cannot access session={session_id} (scoped to {user.session_id})"
+        )
+        await _send_error(ws, "You don't have access to this interview session", recoverable=False)
+        await ws.close(code=4003, reason="Session access denied")
+        return False
+
+    return True
 
 
 def _question_to_msg(
@@ -302,7 +353,7 @@ async def interview_websocket(
     await ws.accept()
 
     # --- Authenticate ---
-    if not await _authenticate_ws(ws, token):
+    if not await _authenticate_ws(ws, token, session_id):
         return
 
     # --- Load session ---
