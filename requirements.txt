@@ -50,6 +50,9 @@ reportlab==4.0.7
 nltk==3.8.1
 textblob==0.17.1
 
+# ============= Streaming / SSE =============
+sse-starlette>=1.6.0  # Server-Sent Events for FastAPI streaming endpoints
+
 # ============= Utilities =============
 httpx==0.26.0
 aiofiles==23.2.1

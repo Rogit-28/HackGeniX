@@ -6,7 +6,7 @@ Includes hallucination detection to ensure evaluations are grounded.
 """
 import json
 import logging
-from typing import Dict, Any, Optional, List
+from typing import AsyncIterator, Dict, Any, Optional, List, Union
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -401,6 +401,164 @@ class AnswerEvaluator:
                 notes=f"Evaluation error: {str(e)}",
             )
     
+    async def evaluate_answer_stream(
+        self,
+        question: str,
+        answer: str,
+        expected_points: List[str],
+        stage: InterviewStage = InterviewStage.TECHNICAL,
+        validate: bool = True,
+    ) -> AsyncIterator[Union["StreamEvent", AnswerEvaluation]]:
+        """
+        Evaluate a candidate's answer with SSE streaming progress.
+        
+        Same logic as evaluate_answer() but yields StreamEvent objects
+        so the frontend can show evaluation stages in real-time.
+        
+        Event flow:
+            status(evaluating)     -> LLM evaluation starting
+            progress(evaluating)   -> evaluation LLM call complete
+            status(validating)     -> hallucination check starting (if validate=True)
+            progress(validating)   -> validation complete
+            AnswerEvaluation       -> final result (last item)
+        
+        Yields:
+            StreamEvent for progress
+            AnswerEvaluation as the final item
+        """
+        from src.services.streaming import (
+            StreamEvent, status_event, progress_event, error_event,
+        )
+        
+        yield status_event("evaluating", "Evaluating answer...")
+        
+        # Format expected points
+        if expected_points:
+            points_text = "\n".join(f"- {p}" for p in expected_points)
+        else:
+            points_text = "(none provided — you MUST generate your own rubric points in Step 1)"
+        
+        prompt = ANSWER_EVALUATION_PROMPT.format(
+            question=question,
+            expected_points=points_text,
+            answer=answer,
+        )
+        
+        messages = [
+            system_message(
+                "You are a strict, adversarial technical interview evaluator. "
+                "Your job is to identify incorrect, vague, and superficial answers. "
+                "Never give the benefit of the doubt — score based only on what the candidate demonstrably knows. "
+                "Wrong answers get low scores regardless of confidence or fluency."
+            ),
+            user_message(prompt),
+        ]
+        
+        try:
+            response = await self.llm.generate(messages, self._eval_config)
+            eval_data = self._parse_json_response(response.content)
+            
+            if not eval_data:
+                evaluation = AnswerEvaluation(
+                    question=question,
+                    answer=answer,
+                    stage=stage,
+                    scores=EvaluationScores(overall=50),
+                    notes="Evaluation parsing failed",
+                )
+                yield evaluation
+                return
+            
+            # Extract scores and enforce server-side weighted calculation
+            scores_data = eval_data.get("scores", {})
+            scores = EvaluationScores.from_dict(scores_data)
+            
+            computed_overall = (
+                scores.technical_accuracy * 0.35 +
+                scores.completeness * 0.25 +
+                scores.clarity * 0.20 +
+                scores.depth * 0.20
+            )
+            scores.overall = round(computed_overall, 1)
+            
+            # Build notes with rubric traceability
+            rubric_points = eval_data.get("rubric_points", [])
+            rubric_matches = eval_data.get("rubric_matches", [])
+            llm_notes = eval_data.get("notes", "")
+            
+            notes_parts = []
+            if llm_notes:
+                notes_parts.append(llm_notes)
+            if rubric_points:
+                notes_parts.append(f"Rubric ({len(rubric_matches)}/{len(rubric_points)} points matched)")
+            
+            evaluation = AnswerEvaluation(
+                question=question,
+                answer=answer,
+                stage=stage,
+                scores=scores,
+                strengths=eval_data.get("strengths", []),
+                improvements=eval_data.get("improvements", []),
+                follow_up_question=eval_data.get("follow_up_question"),
+                recommendation=AnswerStrength.from_string(eval_data.get("recommendation", "acceptable")),
+                notes=" | ".join(notes_parts) if notes_parts else "",
+            )
+            
+            yield progress_event(
+                "evaluating",
+                f"Evaluation complete: {scores.overall:.0f}/100",
+                overall_score=scores.overall,
+                recommendation=evaluation.recommendation.value,
+            )
+            
+            # Validate evaluation if requested
+            if validate:
+                yield status_event("validating", "Running hallucination check...")
+                
+                validation = await self._validate_evaluation(question, answer, eval_data)
+                evaluation.is_validated = validation.get("is_grounded", False)
+                evaluation.validation_issues = [
+                    issue.get("description", "") 
+                    for issue in validation.get("issues", [])
+                ]
+                
+                # Apply corrections if needed
+                if not evaluation.is_validated and validation.get("corrected_evaluation"):
+                    corrected = validation["corrected_evaluation"]
+                    if isinstance(corrected, dict) and "scores" in corrected:
+                        corrected_scores = EvaluationScores.from_dict(corrected["scores"])
+                        corrected_scores.overall = round(
+                            corrected_scores.technical_accuracy * 0.35 +
+                            corrected_scores.completeness * 0.25 +
+                            corrected_scores.clarity * 0.20 +
+                            corrected_scores.depth * 0.20,
+                            1,
+                        )
+                        evaluation.scores = corrected_scores
+                        evaluation.is_validated = True
+                
+                yield progress_event(
+                    "validating",
+                    f"Validation {'passed' if evaluation.is_validated else 'found issues'}",
+                    is_validated=evaluation.is_validated,
+                    issues_count=len(evaluation.validation_issues),
+                )
+            else:
+                evaluation.is_validated = True
+            
+            yield evaluation
+            
+        except Exception as e:
+            logger.error(f"Failed to evaluate answer: {e}")
+            yield error_event("evaluating", f"Evaluation failed: {e}")
+            yield AnswerEvaluation(
+                question=question,
+                answer=answer,
+                stage=stage,
+                scores=EvaluationScores(overall=50),
+                notes=f"Evaluation error: {str(e)}",
+            )
+    
     async def evaluate_behavioral_answer(
         self,
         question: str,
@@ -529,6 +687,165 @@ class AnswerEvaluator:
         except Exception as e:
             logger.error(f"Failed to evaluate behavioral answer: {e}")
             return AnswerEvaluation(
+                question=question,
+                answer=answer,
+                stage=InterviewStage.BEHAVIORAL,
+                scores=EvaluationScores(overall=50),
+                notes=f"Evaluation error: {str(e)}",
+            )
+    
+    async def evaluate_behavioral_answer_stream(
+        self,
+        question: str,
+        answer: str,
+        competency: str,
+        red_flags: List[str],
+        green_flags: List[str],
+        validate: bool = True,
+    ) -> AsyncIterator[Union["StreamEvent", AnswerEvaluation]]:
+        """
+        Evaluate a behavioral answer with SSE streaming progress.
+        
+        Same logic as evaluate_behavioral_answer() but yields StreamEvent
+        objects so the frontend can show evaluation stages in real-time.
+        
+        Event flow:
+            status(evaluating_behavioral) -> STAR evaluation starting
+            progress(evaluating_behavioral) -> evaluation complete
+            status(validating) -> hallucination check (if validate=True)
+            progress(validating) -> validation complete
+            AnswerEvaluation -> final result (last item)
+        
+        Yields:
+            StreamEvent for progress
+            AnswerEvaluation as the final item
+        """
+        from src.services.streaming import (
+            StreamEvent, status_event, progress_event, error_event,
+        )
+        
+        yield status_event("evaluating_behavioral", f"Evaluating behavioral answer ({competency})...")
+        
+        # Format flags
+        red_flags_text = (
+            "\n".join(f"- {f}" for f in red_flags)
+            if red_flags
+            else "(none provided — you MUST generate your own red flags for this competency)"
+        )
+        green_flags_text = (
+            "\n".join(f"- {f}" for f in green_flags)
+            if green_flags
+            else "(none provided — you MUST generate your own green flags for this competency)"
+        )
+        
+        prompt = BEHAVIORAL_EVALUATION_PROMPT.format(
+            question=question,
+            competency=competency,
+            answer=answer,
+            red_flags=red_flags_text,
+            green_flags=green_flags_text,
+        )
+        
+        messages = [
+            system_message(
+                "You are a strict behavioral interview evaluator. "
+                "Your job is to distinguish genuine, substantive experiences from vague, "
+                "fabricated, or rehearsed non-answers. "
+                "Hypothetical answers ('I would...') are not behavioral evidence. "
+                "Vague answers without specific details score low regardless of polish."
+            ),
+            user_message(prompt),
+        ]
+        
+        try:
+            response = await self.llm.generate(messages, self._eval_config)
+            eval_data = self._parse_json_response(response.content)
+            
+            if not eval_data:
+                evaluation = AnswerEvaluation(
+                    question=question,
+                    answer=answer,
+                    stage=InterviewStage.BEHAVIORAL,
+                    scores=EvaluationScores(overall=50),
+                    notes="Evaluation parsing failed",
+                )
+                yield evaluation
+                return
+            
+            # Extract STAR scores and sub-scores
+            star_scores = STARScores.from_dict(eval_data.get("star_scores", {}))
+            authenticity = float(eval_data.get("authenticity_score", 0))
+            relevance = float(eval_data.get("relevance_score", 0))
+            self_awareness = float(eval_data.get("self_awareness_score", 0))
+            
+            # Enforce server-side weighted overall
+            computed_overall = round(
+                star_scores.total * 0.40 +
+                authenticity * 0.25 +
+                relevance * 0.20 +
+                self_awareness * 0.15,
+                1,
+            )
+            
+            # Build notes
+            quality_indicators = eval_data.get("quality_indicators", [])
+            llm_notes = eval_data.get("notes", "")
+            notes_parts = []
+            if llm_notes:
+                notes_parts.append(llm_notes)
+            if quality_indicators:
+                notes_parts.append(f"Quality indicators: {len(quality_indicators)} defined")
+            
+            evaluation = AnswerEvaluation(
+                question=question,
+                answer=answer,
+                stage=InterviewStage.BEHAVIORAL,
+                scores=EvaluationScores(
+                    overall=computed_overall,
+                    clarity=self_awareness,
+                    completeness=relevance,
+                    technical_accuracy=authenticity,
+                ),
+                star_scores=star_scores,
+                strengths=eval_data.get("green_flags_detected", []),
+                improvements=eval_data.get("red_flags_detected", []),
+                recommendation=AnswerStrength.from_string(eval_data.get("recommendation", "acceptable")),
+                notes=" | ".join(notes_parts) if notes_parts else "",
+            )
+            
+            yield progress_event(
+                "evaluating_behavioral",
+                f"Behavioral evaluation complete: {computed_overall:.0f}/100 (STAR: {star_scores.total:.0f})",
+                overall_score=computed_overall,
+                star_total=star_scores.total,
+                recommendation=evaluation.recommendation.value,
+            )
+            
+            if validate:
+                yield status_event("validating", "Running hallucination check...")
+                
+                validation = await self._validate_evaluation(question, answer, eval_data)
+                evaluation.is_validated = validation.get("is_grounded", False)
+                evaluation.validation_issues = [
+                    issue.get("description", "") 
+                    for issue in validation.get("issues", [])
+                ]
+                
+                yield progress_event(
+                    "validating",
+                    f"Validation {'passed' if evaluation.is_validated else 'found issues'}",
+                    is_validated=evaluation.is_validated,
+                    issues_count=len(evaluation.validation_issues),
+                )
+            else:
+                evaluation.is_validated = True
+            
+            yield evaluation
+            
+        except Exception as e:
+            logger.error(f"Failed to evaluate behavioral answer: {e}")
+            yield error_event("evaluating_behavioral", f"Behavioral evaluation failed: {e}")
+            yield AnswerEvaluation(
                 question=question,
                 answer=answer,
                 stage=InterviewStage.BEHAVIORAL,

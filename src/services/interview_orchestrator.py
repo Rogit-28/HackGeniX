@@ -9,7 +9,7 @@ import base64
 import logging
 import uuid
 from datetime import datetime
-from typing import Dict, List, Optional, Any, Tuple
+from typing import AsyncIterator, Dict, List, Optional, Any, Tuple, Union
 from pathlib import Path
 import tempfile
 
@@ -55,6 +55,14 @@ from src.services.prompts import (
 )
 from src.services.session_repository import get_session_repository
 from src.services.semantic_matcher import get_semantic_matcher
+from src.services.streaming import (
+    StreamEvent,
+    status_event,
+    progress_event,
+    result_event,
+    error_event,
+    done_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -262,6 +270,112 @@ class InterviewOrchestrator:
             logger.error(f"Failed to generate {stage.value} questions: {e}")
             # Return fallback questions
             return self._get_fallback_questions(stage, num_questions)
+    
+    async def _generate_stage_questions_stream(
+        self,
+        stage: InterviewStage,
+        resume: ParsedResume,
+        jd: ParsedJobDescription,
+        config: InterviewConfig,
+        previous_questions: List[str] = None,
+        match_analysis: Optional[Dict[str, Any]] = None,
+    ) -> AsyncIterator[Union[StreamEvent, List[InterviewQuestion]]]:
+        """
+        Generate questions for a specific stage with SSE streaming.
+        
+        Same as _generate_stage_questions() but yields StreamEvent progress
+        from the underlying question generator's streaming method.
+        
+        Yields:
+            StreamEvent for progress
+            List[InterviewQuestion] as the final item
+        """
+        num_questions = self._get_stage_question_count(config, stage)
+        
+        if stage == InterviewStage.WRAP_UP:
+            # Simple wrap-up question — no LLM needed
+            questions = [InterviewQuestion(
+                id=str(uuid.uuid4()),
+                question_text="Is there anything else you'd like to share about your experience or ask about the role?",
+                stage=stage,
+                difficulty="easy",
+                category="wrap_up",
+                purpose="Allow candidate to add final thoughts and ask questions",
+                expected_answer_points=["Shows interest in role", "Asks thoughtful questions"],
+                duration_seconds=180,
+            )]
+            yield questions
+            return
+        
+        # Map to difficulty
+        difficulty_map = {
+            InterviewStage.SCREENING: QuestionDifficulty.EASY,
+            InterviewStage.TECHNICAL: QuestionDifficulty.MEDIUM,
+            InterviewStage.BEHAVIORAL: QuestionDifficulty.MEDIUM,
+            InterviewStage.SYSTEM_DESIGN: QuestionDifficulty.HARD,
+        }
+        
+        request = QuestionGenerationRequest(
+            stage=self._stage_to_prompt_stage(stage),
+            num_questions=num_questions,
+            difficulty=difficulty_map.get(stage, QuestionDifficulty.MEDIUM),
+            focus_areas=config.focus_skills,
+            exclude_topics=config.exclude_topics,
+        )
+        
+        try:
+            generated = None
+            
+            if config.use_question_bank:
+                # Hybrid mode — not streaming (still uses non-streaming hybrid path)
+                generated = await self._generate_hybrid_questions(
+                    request=request,
+                    stage=stage,
+                    resume=resume,
+                    jd=jd,
+                    config=config,
+                    previous_questions=previous_questions,
+                    match_analysis=match_analysis,
+                )
+            else:
+                # Pure LLM generation — use streaming variant
+                async for item in self.question_generator.generate_questions_stream(
+                    request=request,
+                    resume=resume,
+                    jd=jd,
+                    previous_questions=previous_questions,
+                    match_analysis=match_analysis,
+                ):
+                    if isinstance(item, StreamEvent):
+                        yield item
+                    else:
+                        generated = item
+            
+            if generated is None:
+                generated = []
+            
+            # Convert to InterviewQuestion models
+            questions = []
+            for gq in generated:
+                questions.append(InterviewQuestion(
+                    id=str(uuid.uuid4()),
+                    question_text=gq.question,
+                    stage=stage,
+                    difficulty=gq.difficulty.value,
+                    category=gq.category,
+                    purpose=gq.purpose,
+                    expected_answer_points=gq.expected_answer_points,
+                    follow_up_questions=gq.follow_up_questions,
+                    duration_seconds=gq.duration_seconds,
+                    competency=gq.competency,
+                    source=gq.source.value if hasattr(gq, 'source') else "generated",
+                ))
+            
+            yield questions
+            
+        except Exception as e:
+            logger.error(f"Failed to generate {stage.value} questions: {e}")
+            yield self._get_fallback_questions(stage, num_questions)
     
     async def _generate_hybrid_questions(
         self,
@@ -515,6 +629,240 @@ class InterviewOrchestrator:
         )
         
         return session, response
+    
+    async def start_interview_stream(
+        self,
+        resume: ParsedResume,
+        jd: ParsedJobDescription,
+        resume_id: str,
+        jd_id: str,
+        config: Optional[InterviewConfig] = None,
+    ) -> AsyncIterator[Union[StreamEvent, InterviewSession]]:
+        """
+        Start a new interview session with SSE streaming.
+        
+        Yields StreamEvent objects as progress milestones so the frontend
+        can show real-time status instead of a blocking spinner.
+        
+        The key UX improvement: the interview is playable as soon as
+        screening questions are ready (~5-8s) rather than waiting for
+        ALL stages to generate (~30s+).
+        
+        Event flow:
+            status(session_created)  → session ID available
+            status(matching)         → match analysis starting
+            progress(matching)       → match scores available
+            result(match_complete)   → full match result
+            status(generating_screening) → screening gen starting
+            result(questions_ready)  → screening questions done, INTERVIEW CAN START
+            status(generating_technical) → technical gen starting
+            result(questions_ready)  → technical questions done
+            ... (behavioral, system_design, wrap_up)
+            result(interview_ready)  → all stages complete
+            done                     → stream ends
+        
+        Yields:
+            StreamEvent for progress updates
+            InterviewSession as the final item (for the API layer to use)
+        """
+        config = config or InterviewConfig()
+        session_id = str(uuid.uuid4())
+        
+        # Extract candidate name from resume
+        candidate_name = "Candidate"
+        if resume.contact and resume.contact.name:
+            candidate_name = resume.contact.name
+        
+        role_title = jd.title or "Software Engineer"
+        
+        # Initialize session
+        session = InterviewSession(
+            id=session_id,
+            resume_id=resume_id,
+            job_description_id=jd_id,
+            candidate_name=candidate_name,
+            role_title=role_title,
+            config=config,
+            status=InterviewStatus.CREATED,
+            current_stage=InterviewStage.SCREENING,
+        )
+        
+        # Initialize stage progress
+        for stage in STAGE_ORDER:
+            if stage == InterviewStage.WRAP_UP:
+                continue
+            count = self._get_stage_question_count(config, stage)
+            if count > 0:
+                session.stage_progress[stage.value] = StageProgress(
+                    stage=stage,
+                    total_questions=count,
+                )
+        
+        # --- Event: session created ---
+        yield status_event("session_created", f"Session {session_id} created")
+        
+        # Persist initial session state
+        await self._save_session(session)
+        
+        # --- Stage: Match analysis ---
+        match_analysis = None
+        try:
+            yield status_event("matching", "Running resume-JD match analysis...")
+            
+            matcher = get_semantic_matcher()
+            
+            # Use streaming matcher if available
+            match_result = None
+            async for item in matcher.match_stream(
+                resume=resume,
+                job_description=jd,
+                resume_id=resume_id,
+                job_description_id=jd_id,
+            ):
+                if isinstance(item, StreamEvent):
+                    # Forward matcher progress events
+                    yield item
+                else:
+                    # Final MatchResult
+                    match_result = item
+            
+            if match_result:
+                match_analysis = match_result.model_dump()
+                session.match_analysis = match_analysis
+                await self._save_session(session)
+                
+                yield result_event(
+                    "match_complete",
+                    {
+                        "overall_score": match_result.overall_score,
+                        "skill_match_score": match_result.skill_match_score,
+                        "matched_skills": match_result.matched_skills[:10],
+                        "missing_skills": match_result.missing_skills[:10],
+                    },
+                    message=f"Match analysis complete: {match_result.overall_score:.1f}/100",
+                )
+                
+                logger.info(
+                    f"Match analysis complete for session {session_id}: "
+                    f"overall={match_result.overall_score:.1f}, "
+                    f"matched_skills={len(match_result.matched_skills)}, "
+                    f"missing_skills={len(match_result.missing_skills)}"
+                )
+        except Exception as e:
+            logger.warning(f"Match analysis failed for session {session_id}, proceeding without: {e}")
+            yield progress_event(
+                "matching",
+                f"Match analysis unavailable, proceeding without: {e}",
+            )
+        
+        # --- Stage: Generate questions progressively ---
+        # Track all previously generated question texts to avoid duplicates
+        all_previous_questions: List[str] = []
+        
+        for stage in STAGE_ORDER:
+            stage_name = stage.value
+            
+            # Skip system_design if configured to 0 questions
+            if stage == InterviewStage.SYSTEM_DESIGN and config.system_design_questions == 0:
+                continue
+            
+            yield status_event(
+                f"generating_{stage_name}",
+                f"Generating {stage_name.replace('_', ' ')} questions...",
+            )
+            
+            try:
+                stage_questions = None
+                async for item in self._generate_stage_questions_stream(
+                    stage=stage,
+                    resume=resume,
+                    jd=jd,
+                    config=config,
+                    previous_questions=all_previous_questions if all_previous_questions else None,
+                    match_analysis=match_analysis,
+                ):
+                    if isinstance(item, StreamEvent):
+                        yield item
+                    else:
+                        stage_questions = item
+                
+                if stage_questions is None:
+                    stage_questions = []
+                
+                session.questions.extend(stage_questions)
+                all_previous_questions.extend([q.question_text for q in stage_questions])
+                
+                # Persist after each stage (incremental persistence)
+                await self._save_session(session)
+                
+                # Determine if this is the first stage (screening) — interview can start
+                is_first_stage = (stage == InterviewStage.SCREENING)
+                
+                yield result_event(
+                    "questions_ready",
+                    {
+                        "stage": stage_name,
+                        "count": len(stage_questions),
+                        "total_so_far": len(session.questions),
+                        "interview_playable": is_first_stage,
+                        "first_question": stage_questions[0].model_dump() if stage_questions else None,
+                    },
+                    message=f"{stage_name.replace('_', ' ').title()}: {len(stage_questions)} questions ready",
+                )
+                
+                logger.info(
+                    f"Session {session_id}: {stage_name} — "
+                    f"{len(stage_questions)} questions generated "
+                    f"(total: {len(session.questions)})"
+                )
+                
+                # After screening is ready, mark session as in-progress
+                # so the frontend can start the interview immediately
+                if is_first_stage:
+                    session.status = InterviewStatus.IN_PROGRESS
+                    session.started_at = datetime.utcnow()
+                    session.last_activity_at = datetime.utcnow()
+                    
+                    # Synthesize first question audio if voice mode
+                    first_question = session.current_question
+                    if config.mode in [InterviewMode.VOICE, InterviewMode.HYBRID] and first_question:
+                        await self._synthesize_question_audio(first_question, config)
+                    
+                    await self._save_session(session)
+                    
+            except Exception as e:
+                logger.error(f"Failed to generate {stage_name} questions: {e}")
+                yield error_event(
+                    f"generating_{stage_name}",
+                    f"Failed to generate {stage_name} questions: {e}",
+                )
+                # Don't abort — continue with remaining stages
+                # (fallback questions were already returned by _generate_stage_questions)
+        
+        # --- Final: interview fully ready ---
+        yield result_event(
+            "interview_ready",
+            {
+                "session_id": session_id,
+                "status": _get_enum_value(session.status),
+                "current_stage": _get_enum_value(session.current_stage),
+                "total_questions": len(session.questions),
+                "first_question": session.current_question.model_dump() if session.current_question else None,
+                "candidate_name": session.candidate_name,
+                "role_title": session.role_title,
+                "stages": {
+                    stage_name: progress.total_questions
+                    for stage_name, progress in session.stage_progress.items()
+                },
+                "message": f"Interview ready. {len(session.questions)} questions across {len(session.stage_progress)} stages.",
+            },
+            message=f"Interview fully ready: {len(session.questions)} questions",
+        )
+        
+        yield done_event(f"Interview session {session_id} ready")
+        
+        # Yield the session object as the final item for the API layer
+        yield session
     
     async def _synthesize_question_audio(
         self,
@@ -776,6 +1124,223 @@ class InterviewOrchestrator:
         )
         
         return response
+    
+    async def submit_answer_stream(
+        self,
+        session_id: str,
+        answer_text: Optional[str] = None,
+        answer_audio_base64: Optional[str] = None,
+    ) -> AsyncIterator[Union[StreamEvent, SubmitAnswerResponse]]:
+        """
+        Submit an answer with SSE streaming progress.
+        
+        Wraps the answer submission pipeline with real-time events
+        so the frontend can show transcription, evaluation, and
+        scoring stages as they happen.
+        
+        Event flow:
+            status(transcribing)     -> audio transcription (voice mode only)
+            progress(transcribing)   -> transcription complete
+            status(evaluating)       -> LLM evaluation starting
+            progress(evaluating)     -> scores available
+            status(validating)       -> hallucination check
+            progress(validating)     -> validation complete
+            status(updating)         -> session state update
+            result(answer_evaluated) -> complete evaluation result
+            done                     -> stream ends
+        
+        Yields:
+            StreamEvent for progress
+            SubmitAnswerResponse as the final item
+        """
+        session = await self.get_session(session_id)
+        if not session:
+            raise ValueError(f"Session not found: {session_id}")
+        
+        if session.status != InterviewStatus.IN_PROGRESS:
+            raise ValueError(f"Session is not in progress: {session.status}")
+        
+        current_question = session.current_question
+        if not current_question:
+            raise ValueError("No pending questions in session")
+        
+        # --- Stage: Transcription (voice mode) ---
+        if answer_audio_base64 and not answer_text:
+            yield status_event("transcribing", "Transcribing audio answer...")
+            
+            context = session.config.focus_skills or []
+            answer_text = await self._transcribe_audio(answer_audio_base64, context)
+            
+            yield progress_event(
+                "transcribing",
+                f"Transcription complete ({len(answer_text)} chars)",
+                text_length=len(answer_text),
+            )
+        
+        if not answer_text:
+            raise ValueError("No answer provided")
+        
+        # --- Stage: Evaluation ---
+        stage_enum = self._stage_to_prompt_stage(InterviewStage(current_question.stage))
+        evaluation = None
+        
+        if stage_enum == PromptStage.BEHAVIORAL and current_question.competency:
+            async for item in self.answer_evaluator.evaluate_behavioral_answer_stream(
+                question=current_question.question_text,
+                answer=answer_text,
+                competency=current_question.competency,
+                red_flags=[],
+                green_flags=[],
+                validate=True,
+            ):
+                if isinstance(item, StreamEvent):
+                    yield item
+                else:
+                    evaluation = item
+        else:
+            async for item in self.answer_evaluator.evaluate_answer_stream(
+                question=current_question.question_text,
+                answer=answer_text,
+                expected_points=current_question.expected_answer_points,
+                stage=stage_enum,
+                validate=True,
+            ):
+                if isinstance(item, StreamEvent):
+                    yield item
+                else:
+                    evaluation = item
+        
+        if not evaluation:
+            # Shouldn't happen, but guard against it
+            from src.services.answer_evaluator import EvaluationScores
+            evaluation = AnswerEvaluation(
+                question=current_question.question_text,
+                answer=answer_text,
+                stage=stage_enum,
+                scores=EvaluationScores(overall=50),
+                notes="Evaluation failed to produce result",
+            )
+        
+        # --- Stage: Update session state ---
+        yield status_event("updating", "Updating session state...")
+        
+        # Record the answer
+        answer_record = AnswerRecord(
+            question_id=current_question.id,
+            question_text=current_question.question_text,
+            stage=InterviewStage(current_question.stage),
+            answer_text=answer_text,
+            scores=evaluation.scores.to_dict(),
+            strengths=evaluation.strengths,
+            improvements=evaluation.improvements,
+            follow_up_question=evaluation.follow_up_question,
+            recommendation=evaluation.recommendation.value,
+            asked_at=datetime.utcnow(),
+            answered_at=datetime.utcnow(),
+        )
+        session.answers.append(answer_record)
+        
+        # Mark question as answered
+        current_question.status = QuestionStatus.ANSWERED
+        
+        # Update stage progress
+        current_stage = InterviewStage(current_question.stage)
+        if current_stage.value in session.stage_progress:
+            progress_obj = session.stage_progress[current_stage.value]
+            progress_obj.answered_questions += 1
+            
+            stage_answers = session.get_stage_answers(current_stage)
+            if stage_answers:
+                scores = [a.scores.get("overall", 0) for a in stage_answers]
+                progress_obj.average_score = sum(scores) / len(scores)
+        
+        # Update performance tracking
+        self._update_performance_tracking(session, evaluation)
+        
+        # Determine next action
+        session.last_activity_at = datetime.utcnow()
+        
+        # Check for follow-up
+        follow_up_question = None
+        if session.config.enable_follow_ups and evaluation.follow_up_question:
+            follow_up_question = evaluation.follow_up_question
+        
+        # Get next question
+        next_question = session.current_question
+        stage_changed = False
+        interview_complete = False
+        
+        if next_question:
+            next_stage = InterviewStage(next_question.stage)
+            if next_stage != current_stage:
+                stage_changed = True
+                session.current_stage = next_stage
+                
+                if current_stage.value in session.stage_progress:
+                    session.stage_progress[current_stage.value].completed_at = datetime.utcnow()
+                
+                if next_stage.value in session.stage_progress:
+                    session.stage_progress[next_stage.value].started_at = datetime.utcnow()
+                
+                logger.info(f"Session {session_id}: Stage transition {current_stage.value} -> {next_stage.value}")
+            
+            # Synthesize audio for next question if voice mode
+            if session.config.mode in [InterviewMode.VOICE, InterviewMode.HYBRID]:
+                await self._synthesize_question_audio(next_question, session.config)
+        else:
+            interview_complete = True
+            session.status = InterviewStatus.COMPLETED
+            session.completed_at = datetime.utcnow()
+            logger.info(f"Session {session_id}: Interview completed")
+        
+        # Persist session state
+        await self._save_session(session)
+        
+        # Calculate progress
+        total_questions = len(session.questions)
+        answered = len(session.answers)
+        progress_percent = (answered / total_questions * 100) if total_questions > 0 else 0
+        
+        response = SubmitAnswerResponse(
+            session_id=session_id,
+            status=_get_enum_value(session.status),
+            evaluation=evaluation.to_dict(),
+            next_question=next_question,
+            follow_up_question=follow_up_question,
+            current_stage=_get_enum_value(session.current_stage),
+            questions_answered=answered,
+            total_questions=total_questions,
+            progress_percent=progress_percent,
+            stage_changed=stage_changed,
+            interview_complete=interview_complete,
+            message="Answer evaluated." + (
+                " Interview complete!" if interview_complete else
+                f" Moving to {_get_enum_value(session.current_stage)} stage." if stage_changed else
+                ""
+            ),
+        )
+        
+        # Final result event
+        yield result_event(
+            "answer_evaluated",
+            {
+                "session_id": session_id,
+                "overall_score": evaluation.scores.overall,
+                "recommendation": evaluation.recommendation.value,
+                "stage_changed": stage_changed,
+                "interview_complete": interview_complete,
+                "questions_answered": answered,
+                "total_questions": total_questions,
+                "progress_percent": progress_percent,
+                "next_question": next_question.model_dump() if next_question else None,
+            },
+            message=response.message,
+        )
+        
+        yield done_event(f"Answer evaluation complete for session {session_id}")
+        
+        # Yield the response object as the final item for the API layer
+        yield response
     
     async def get_progress(self, session_id: str) -> InterviewProgressResponse:
         """Get current interview progress."""

@@ -8,6 +8,7 @@ from typing import Optional, List
 
 from bson import ObjectId
 from fastapi import APIRouter, HTTPException, status, Query, Depends
+from sse_starlette.sse import EventSourceResponse
 
 from src.core.auth import require_permission, require_session_access
 from src.core.database import mongodb_client
@@ -15,6 +16,7 @@ from src.core.permissions import Permissions
 from src.models.auth import AuthenticatedUser
 from src.models.interview import (
     InterviewStatus,
+    InterviewSession,
     StartInterviewRequest,
     StartInterviewResponse,
     SubmitAnswerRequest,
@@ -25,25 +27,42 @@ from src.models.interview import (
 )
 from src.models.documents import ParsedResume, ParsedJobDescription
 from src.services.interview_orchestrator import get_interview_orchestrator
+from src.services.streaming import StreamEvent, error_event, done_event
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/sessions", tags=["sessions"])
 
 
-@router.post("/start", response_model=StartInterviewResponse)
+@router.post("/start")
 async def start_interview(
     request: StartInterviewRequest,
     user: AuthenticatedUser = Depends(require_permission(Permissions.CREATE_SESSION)),
 ):
     """
-    Start a new interview session.
+    Start a new interview session (SSE streaming).
     
-    Creates an interview session with questions generated based on the
-    candidate's resume and the job description.
+    Returns an SSE stream with real-time progress events as the interview
+    is being set up (match analysis, question generation per stage).
+    
+    The interview becomes playable as soon as screening questions are ready
+    (~5-8s) rather than waiting for all stages (~30s+).
+    
+    Event flow:
+        status(session_created) → session ID available
+        status/progress(matching) → match analysis progress
+        result(match_complete) → match scores
+        status(generating_screening) → screening gen starting
+        result(questions_ready) → screening ready, interview_playable=true
+        status(generating_technical) → ...
+        result(questions_ready) → technical ready
+        ... (behavioral, system_design, wrap_up)
+        result(interview_ready) → all stages complete, full session data
+        done → stream ends
     """
     orchestrator = get_interview_orchestrator()
     
+    # --- Validation upfront (before entering SSE stream) ---
     # Fetch resume from MongoDB
     try:
         resume_doc = await mongodb_client.resumes.find_one(
@@ -94,63 +113,108 @@ async def start_interview(
     resume = ParsedResume(**resume_doc["parsed_data"])
     jd = ParsedJobDescription(**jd_doc["parsed_data"])
     
-    try:
-        session, response = await orchestrator.start_interview(
-            resume=resume,
-            jd=jd,
-            resume_id=request.resume_id,
-            jd_id=request.job_description_id,
-            config=request.config,
-        )
-        
-        logger.info(f"Interview started: session={session.id}, questions={len(session.questions)}")
-        return response
-        
-    except Exception as e:
-        logger.error(f"Failed to start interview: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to start interview: {str(e)}",
-        )
+    # --- SSE stream ---
+    async def event_generator():
+        try:
+            async for item in orchestrator.start_interview_stream(
+                resume=resume,
+                jd=jd,
+                resume_id=request.resume_id,
+                jd_id=request.job_description_id,
+                config=request.config,
+            ):
+                if isinstance(item, StreamEvent):
+                    yield item.to_sse()
+                elif isinstance(item, InterviewSession):
+                    # Final session object — we already sent interview_ready event
+                    logger.info(
+                        f"Interview started: session={item.id}, "
+                        f"questions={len(item.questions)}"
+                    )
+                    # Stream is done
+                    
+        except Exception as e:
+            logger.error(f"Failed to start interview: {e}")
+            yield error_event("interview_start", f"Failed to start interview: {e}").to_sse()
+            yield done_event("Stream ended due to error").to_sse()
+    
+    return EventSourceResponse(event_generator())
 
 
-@router.post("/answer", response_model=SubmitAnswerResponse)
+@router.post("/answer")
 async def submit_answer(
     request: SubmitAnswerRequest,
     user: AuthenticatedUser = Depends(require_permission(Permissions.PARTICIPATE_SESSION)),
 ):
     """
-    Submit an answer for the current question.
+    Submit an answer for the current question (SSE streaming).
     
-    Accepts text answers or audio (for voice mode).
-    Returns evaluation and next question.
+    Returns an SSE stream with real-time progress as the answer is
+    transcribed (voice mode), evaluated, validated, and scored.
+    
+    Event flow:
+        status(transcribing)     -> audio transcription (voice mode only)
+        progress(transcribing)   -> transcription complete
+        status(evaluating)       -> LLM evaluation starting
+        progress(evaluating)     -> scores available
+        status(validating)       -> hallucination check
+        progress(validating)     -> validation complete
+        status(updating)         -> session state update
+        result(answer_evaluated) -> complete evaluation + next question
+        done                     -> stream ends
     """
     orchestrator = get_interview_orchestrator()
     
-    try:
-        response = await orchestrator.submit_answer(
-            session_id=request.session_id,
-            answer_text=request.answer_text,
-            answer_audio_base64=request.answer_audio_base64,
+    # Validate session exists and is in progress before entering SSE stream
+    session = await orchestrator.get_session(request.session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session not found: {request.session_id}",
         )
-        
-        logger.info(
-            f"Answer submitted: session={request.session_id}, "
-            f"score={response.evaluation.get('scores', {}).get('overall', 0) if response.evaluation else 0}"
-        )
-        return response
-        
-    except ValueError as e:
+    
+    if session.status.value != "in_progress" if hasattr(session.status, 'value') else session.status != "in_progress":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
+            detail=f"Session is not in progress",
         )
-    except Exception as e:
-        logger.error(f"Failed to submit answer: {e}")
+    
+    if not session.current_question:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to submit answer: {str(e)}",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No pending questions in session",
         )
+    
+    if not request.answer_text and not request.answer_audio_base64:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No answer provided (text or audio required)",
+        )
+    
+    async def event_generator():
+        try:
+            async for item in orchestrator.submit_answer_stream(
+                session_id=request.session_id,
+                answer_text=request.answer_text,
+                answer_audio_base64=request.answer_audio_base64,
+            ):
+                if isinstance(item, StreamEvent):
+                    yield item.to_sse()
+                elif isinstance(item, SubmitAnswerResponse):
+                    logger.info(
+                        f"Answer submitted: session={request.session_id}, "
+                        f"score={item.evaluation.get('scores', {}).get('overall', 0) if item.evaluation else 0}"
+                    )
+                    
+        except ValueError as e:
+            yield error_event("answer_submission", str(e)).to_sse()
+            yield done_event("Stream ended due to error").to_sse()
+        except Exception as e:
+            logger.error(f"Failed to submit answer: {e}")
+            yield error_event("answer_submission", f"Failed to submit answer: {e}").to_sse()
+            yield done_event("Stream ended due to error").to_sse()
+    
+    return EventSourceResponse(event_generator())
 
 
 @router.get("/{session_id}/progress", response_model=InterviewProgressResponse)

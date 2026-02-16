@@ -10,7 +10,7 @@ import shutil
 import logging
 import hashlib
 import json
-from typing import List, Dict, Any, Optional
+from typing import AsyncIterator, List, Dict, Any, Optional, Union
 from pathlib import Path
 
 from pdfplumber import open as open_pdf
@@ -347,6 +347,248 @@ class DocumentProcessor:
         except Exception as e:
             logger.warning(f"LLM JD parsing failed: {e}, returning minimal parse")
             return ParsedJobDescription(raw_text=text)
+
+    # =========================================================================
+    # Streaming LLM-Based Parsing Methods
+    # =========================================================================
+
+    async def parse_resume_with_llm_stream(
+        self,
+        text: str,
+        use_cache: bool = True,
+    ) -> AsyncIterator[Union["StreamEvent", "ParsedResume"]]:
+        """
+        Parse a resume using LLM, streaming progress events via SSE.
+
+        Yields StreamEvent objects for progress updates and a final ParsedResume
+        as the last item.  The caller (API layer) wraps these into SSE wire
+        format via ``event.to_sse()``.
+
+        Falls back to the non-streaming path on infrastructure errors so the
+        caller always gets a result or an error event.
+        """
+        from src.services.streaming import (
+            StreamEvent, status_event, progress_event,
+            result_event, error_event, done_event,
+            stream_llm_generation,
+        )
+
+        yield status_event("upload", "File received, starting processing...")
+
+        # --- cache check ---
+        text_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
+        cache_key = f"resume_{text_hash}"
+
+        if use_cache:
+            cached = self._get_from_cache(cache_key)
+            if cached:
+                logger.info(f"Using cached resume parse: {cache_key}")
+                yield status_event("cache", "Using cached result")
+                yield result_event(
+                    "resume_parsed",
+                    cached.model_dump() if hasattr(cached, "model_dump") else {},
+                    message="Resume parsed (cached)",
+                )
+                yield done_event("Resume parsing complete (cached)")
+                yield cached
+                return
+
+        if not text or len(text.strip()) < 50:
+            logger.warning("Resume text too short, returning empty parse")
+            empty = ParsedResume(raw_text=text)
+            yield error_event("validation", "Resume text too short for parsing")
+            yield empty
+            return
+
+        try:
+            from src.providers.llm import get_llm_provider
+            from src.providers.llm.base import GenerationConfig, user_message, system_message
+            from src.services.prompts import RESUME_EXTRACTION_PROMPT
+
+            llm = await get_llm_provider()
+
+            resume_text = text[:8000] if len(text) > 8000 else text
+            prompt = RESUME_EXTRACTION_PROMPT.format(resume_text=resume_text)
+
+            messages = [
+                system_message(
+                    "You are a JSON formatter. Your ONLY job is to map raw resume text "
+                    "into structured JSON key-value pairs. Copy every word verbatim. "
+                    "Do not summarize, interpret, or rephrase anything."
+                ),
+                user_message(prompt),
+            ]
+
+            config = GenerationConfig(max_tokens=4096, temperature=0.1, json_mode=True)
+
+            yield status_event("parsing", "Analyzing resume with AI...")
+
+            # Stream tokens, accumulate the full response
+            accumulated: list[str] = []
+            async for item in stream_llm_generation(llm, messages, config, stage="parsing"):
+                if isinstance(item, StreamEvent):
+                    yield item  # forward progress events
+                else:
+                    accumulated.append(item)  # raw token
+
+            full_response = "".join(accumulated)
+
+            yield status_event("processing", "Processing AI response...")
+
+            # Parse JSON
+            data = self._parse_llm_json_response(full_response)
+
+            if not data:
+                # Retry with temperature=0
+                yield status_event("retry", "Retrying with stricter parameters...")
+                config_retry = GenerationConfig(max_tokens=4096, temperature=0.0, json_mode=True)
+                accumulated = []
+                async for item in stream_llm_generation(llm, messages, config_retry, stage="retry"):
+                    if isinstance(item, StreamEvent):
+                        yield item
+                    else:
+                        accumulated.append(item)
+                full_response = "".join(accumulated)
+                data = self._parse_llm_json_response(full_response)
+
+            if not data:
+                logger.warning("LLM returned invalid JSON for resume after retry")
+                yield error_event("processing", "Failed to parse AI response, returning minimal data")
+                empty = ParsedResume(raw_text=text)
+                yield empty
+                return
+
+            # Convert to ParsedResume
+            parsed = self._json_to_parsed_resume(data, text)
+            parsed = self._enrich_skills(parsed)
+
+            if use_cache:
+                self._save_to_cache(cache_key, parsed)
+
+            yield result_event(
+                "resume_parsed",
+                parsed.model_dump() if hasattr(parsed, "model_dump") else {},
+                message=f"Resume parsed: {parsed.contact.name if parsed.contact else 'Unknown'}",
+            )
+            yield done_event("Resume parsing complete")
+            yield parsed
+
+        except Exception as e:
+            logger.warning(f"LLM resume streaming parse failed: {e}")
+            yield error_event("parsing", f"Parsing failed: {e}")
+            yield ParsedResume(raw_text=text)
+
+    async def parse_jd_with_llm_stream(
+        self,
+        text: str,
+        use_cache: bool = True,
+    ) -> AsyncIterator[Union["StreamEvent", "ParsedJobDescription"]]:
+        """
+        Parse a job description using LLM, streaming progress events via SSE.
+
+        Same pattern as ``parse_resume_with_llm_stream``.
+        """
+        from src.services.streaming import (
+            StreamEvent, status_event, progress_event,
+            result_event, error_event, done_event,
+            stream_llm_generation,
+        )
+
+        yield status_event("upload", "File received, starting processing...")
+
+        # --- cache check ---
+        text_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
+        cache_key = f"jd_{text_hash}"
+
+        if use_cache:
+            cached = self._get_from_cache(cache_key)
+            if cached:
+                logger.info(f"Using cached JD parse: {cache_key}")
+                yield status_event("cache", "Using cached result")
+                yield result_event(
+                    "jd_parsed",
+                    cached.model_dump() if hasattr(cached, "model_dump") else {},
+                    message="Job description parsed (cached)",
+                )
+                yield done_event("JD parsing complete (cached)")
+                yield cached
+                return
+
+        if not text or len(text.strip()) < 50:
+            logger.warning("JD text too short, returning empty parse")
+            empty = ParsedJobDescription(raw_text=text)
+            yield error_event("validation", "Job description text too short for parsing")
+            yield empty
+            return
+
+        try:
+            from src.providers.llm import get_llm_provider
+            from src.providers.llm.base import GenerationConfig, user_message, system_message
+            from src.services.prompts import JD_EXTRACTION_PROMPT
+
+            llm = await get_llm_provider()
+
+            jd_text = text[:8000] if len(text) > 8000 else text
+            prompt = JD_EXTRACTION_PROMPT.format(jd_text=jd_text)
+
+            messages = [
+                system_message("You are an expert job description parser. Extract requirements accurately."),
+                user_message(prompt),
+            ]
+
+            config = GenerationConfig(max_tokens=2048, temperature=0.1, json_mode=True)
+
+            yield status_event("parsing", "Analyzing job description with AI...")
+
+            accumulated: list[str] = []
+            async for item in stream_llm_generation(llm, messages, config, stage="parsing"):
+                if isinstance(item, StreamEvent):
+                    yield item
+                else:
+                    accumulated.append(item)
+
+            full_response = "".join(accumulated)
+
+            yield status_event("processing", "Processing AI response...")
+
+            data = self._parse_llm_json_response(full_response)
+
+            if not data:
+                yield status_event("retry", "Retrying with stricter parameters...")
+                config_retry = GenerationConfig(max_tokens=2048, temperature=0.0, json_mode=True)
+                accumulated = []
+                async for item in stream_llm_generation(llm, messages, config_retry, stage="retry"):
+                    if isinstance(item, StreamEvent):
+                        yield item
+                    else:
+                        accumulated.append(item)
+                full_response = "".join(accumulated)
+                data = self._parse_llm_json_response(full_response)
+
+            if not data:
+                logger.warning("LLM returned invalid JSON for JD after retry")
+                yield error_event("processing", "Failed to parse AI response, returning minimal data")
+                empty = ParsedJobDescription(raw_text=text)
+                yield empty
+                return
+
+            parsed = self._json_to_parsed_jd(data, text)
+
+            if use_cache:
+                self._save_to_cache(cache_key, parsed)
+
+            yield result_event(
+                "jd_parsed",
+                parsed.model_dump() if hasattr(parsed, "model_dump") else {},
+                message=f"Job description parsed: {parsed.title or 'Unknown'}",
+            )
+            yield done_event("JD parsing complete")
+            yield parsed
+
+        except Exception as e:
+            logger.warning(f"LLM JD streaming parse failed: {e}")
+            yield error_event("parsing", f"Parsing failed: {e}")
+            yield ParsedJobDescription(raw_text=text)
 
     # =========================================================================
     # JSON Parsing Helpers

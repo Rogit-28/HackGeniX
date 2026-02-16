@@ -11,7 +11,7 @@ Supports hybrid mode (Phase 6.5):
 """
 import json
 import logging
-from typing import List, Dict, Any, Optional, Tuple
+from typing import AsyncIterator, List, Dict, Any, Optional, Tuple, Union
 from dataclasses import dataclass, field
 
 from src.providers.llm import (
@@ -353,6 +353,112 @@ class QuestionGenerator:
             
         except Exception as e:
             logger.error(f"Failed to generate questions: {e}")
+            raise
+    
+    async def generate_questions_stream(
+        self,
+        request: QuestionGenerationRequest,
+        resume: ParsedResume,
+        jd: ParsedJobDescription,
+        previous_questions: Optional[List[str]] = None,
+        match_analysis: Optional[Dict[str, Any]] = None,
+    ) -> AsyncIterator[Union["StreamEvent", List[GeneratedQuestion]]]:
+        """
+        Generate interview questions with SSE streaming progress.
+        
+        Same logic as generate_questions() but yields StreamEvent objects
+        so the frontend can show real-time progress during LLM generation.
+        
+        Event flow:
+            status(generating)   -> LLM call starting
+            progress(generating) -> LLM call complete, parsing results
+            List[GeneratedQuestion] -> final result (last item)
+        
+        Yields:
+            StreamEvent for progress
+            List[GeneratedQuestion] as the final item
+        """
+        from src.services.streaming import (
+            StreamEvent, status_event, progress_event, error_event,
+        )
+        
+        stage = request.stage
+        stage_name = stage.value
+        
+        yield status_event(
+            f"generating_{stage_name}",
+            f"Generating {request.num_questions} {stage_name.replace('_', ' ')} questions...",
+        )
+        
+        # Get the appropriate prompt template
+        if stage not in QUESTION_GENERATION_PROMPTS:
+            yield error_event(f"generating_{stage_name}", f"No prompt template for stage: {stage}")
+            yield []
+            return
+        
+        prompt_template = QUESTION_GENERATION_PROMPTS[stage]
+        
+        # Build context
+        context = {
+            "num_questions": request.num_questions,
+            "role_title": jd.title or "Software Engineer",
+            "jd_summary": self._build_jd_summary(jd),
+            "resume_summary": self._build_resume_summary(resume),
+            "required_skills": ", ".join(jd.required_skills[:15]),
+            "technical_background": self._build_resume_summary(resume),
+            "focus_areas": ", ".join(request.focus_areas) if request.focus_areas else "general technical skills",
+            "experience_summary": self._build_resume_summary(resume),
+            "competencies": "leadership, problem-solving, teamwork, communication, adaptability",
+            "technical_requirements": ", ".join(jd.required_skills[:10]),
+            "system_experience": "Based on resume experience",
+            "complexity_level": "appropriate for candidate experience",
+            "match_context": self._build_match_context(match_analysis),
+        }
+        
+        prompt = prompt_template.format(**context)
+        
+        if previous_questions:
+            prompt += f"\n\nAvoid questions similar to these already asked:\n"
+            for q in previous_questions[:10]:
+                prompt += f"- {q}\n"
+        
+        messages = [
+            system_message(INTERVIEWER_SYSTEM_PROMPT),
+            user_message(prompt),
+        ]
+        
+        try:
+            response = await self.llm.generate(messages, self._generation_config)
+            questions_data = self._parse_llm_json_response(response.content)
+            
+            questions = []
+            for q_data in questions_data:
+                if isinstance(q_data, dict) and "question" in q_data:
+                    questions.append(GeneratedQuestion(
+                        question=q_data["question"],
+                        stage=stage,
+                        difficulty=QuestionDifficulty(q_data.get("difficulty", "medium")),
+                        category=q_data.get("category"),
+                        purpose=q_data.get("purpose", ""),
+                        expected_answer_points=q_data.get("expected_answer_points", []),
+                        follow_up_questions=q_data.get("follow_up_questions", []),
+                        duration_seconds=q_data.get("duration_seconds", 120),
+                        competency=q_data.get("competency"),
+                    ))
+            
+            yield progress_event(
+                f"generating_{stage_name}",
+                f"Generated {len(questions)} {stage_name.replace('_', ' ')} questions",
+                count=len(questions),
+                stage=stage_name,
+            )
+            
+            logger.info(f"Generated {len(questions)} {stage.value} questions (streaming)")
+            yield questions
+            
+        except Exception as e:
+            logger.error(f"Failed to generate questions: {e}")
+            yield error_event(f"generating_{stage_name}", f"Question generation failed: {e}")
             raise
     
     async def generate_follow_up(

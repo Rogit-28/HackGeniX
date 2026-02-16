@@ -10,7 +10,7 @@ by the ``matching`` section in ``config/models.yaml``.
 import asyncio
 import json
 import logging
-from typing import List, Dict, Any, Optional, Tuple
+from typing import AsyncIterator, List, Dict, Any, Optional, Tuple, Union
 import numpy as np
 
 import torch
@@ -599,6 +599,128 @@ class SemanticMatcher:
             strengths=llm_result.get("strengths", []) if llm_result else [],
             llm_enabled=llm_result is not None,
         )
+
+    async def match_stream(
+        self,
+        resume: ParsedResume,
+        job_description: ParsedJobDescription,
+        resume_id: str,
+        job_description_id: str,
+        use_llm: bool = True,
+    ) -> AsyncIterator[Union["StreamEvent", MatchResult]]:
+        """
+        Perform matching with SSE progress streaming.
+
+        Yields StreamEvent objects for each stage of the matching pipeline,
+        and a final MatchResult as the last item.
+        """
+        from src.services.streaming import (
+            StreamEvent, status_event, progress_event,
+            result_event, error_event, done_event,
+            stream_llm_generation,
+        )
+
+        logger.info(f"Streaming match: resume {resume_id} against JD {job_description_id}")
+
+        # --- Stage 1: Embedding & algorithmic scores ---
+        yield status_event("embeddings", "Computing semantic embeddings...")
+
+        (semantic_score, skill_score, matched_skills,
+         missing_skills, experience_score) = await asyncio.to_thread(
+            self._compute_core_scores, resume, job_description
+        )
+
+        yield progress_event(
+            "embeddings",
+            f"Semantic: {semantic_score:.1f}, Skills: {skill_score:.1f}, Experience: {experience_score:.1f}",
+            semantic_score=round(semantic_score, 1),
+            skill_score=round(skill_score, 1),
+            experience_score=round(experience_score, 1),
+            matched_skills=matched_skills,
+            missing_skills=missing_skills,
+        )
+
+        # --- Stage 2: LLM fit assessment (optional) ---
+        llm_result: Optional[Dict[str, Any]] = None
+        run_llm = use_llm and self.llm_enabled
+
+        if run_llm:
+            yield status_event("llm_assessment", "Running AI fit assessment...")
+
+            llm_result = await self.compute_llm_fit_assessment(
+                resume=resume,
+                job_description=job_description,
+                semantic_score=semantic_score,
+                skill_score=skill_score,
+                experience_score=experience_score,
+                matched_skills=matched_skills,
+                missing_skills=missing_skills,
+            )
+
+            if llm_result:
+                yield progress_event(
+                    "llm_assessment",
+                    f"AI fit score: {llm_result['fit_score']:.0f}",
+                    fit_score=llm_result["fit_score"],
+                )
+            else:
+                yield progress_event(
+                    "llm_assessment",
+                    "AI assessment unavailable, using algorithmic scores only",
+                )
+
+        # --- Stage 3: Compute final score ---
+        yield status_event("scoring", "Computing final score...")
+
+        if llm_result is not None:
+            weights = self.weights_hybrid
+            overall_score = (
+                semantic_score * weights["semantic"]
+                + skill_score * weights["skills"]
+                + experience_score * weights["experience"]
+                + llm_result["fit_score"] * weights["llm_fit"]
+            )
+        else:
+            weights = self.weights_core
+            overall_score = (
+                semantic_score * weights["semantic"]
+                + skill_score * weights["skills"]
+                + experience_score * weights["experience"]
+            )
+
+        recommendations = self.generate_recommendations(
+            resume, job_description, missing_skills, overall_score
+        )
+
+        logger.info(
+            f"Stream match complete: overall={overall_score:.1f}, "
+            f"semantic={semantic_score:.1f}, skills={skill_score:.1f}, "
+            f"experience={experience_score:.1f}, "
+            f"llm={'on (score=' + str(llm_result['fit_score']) + ')' if llm_result else 'off'}"
+        )
+
+        match_result = MatchResult(
+            resume_id=resume_id,
+            job_description_id=job_description_id,
+            overall_score=overall_score,
+            skill_match_score=skill_score,
+            experience_match_score=experience_score,
+            semantic_similarity_score=semantic_score,
+            matched_skills=matched_skills,
+            missing_skills=missing_skills,
+            recommendations=recommendations,
+            llm_fit_score=llm_result["fit_score"] if llm_result else None,
+            llm_reasoning=llm_result["reasoning"] if llm_result else None,
+            transferable_skills=llm_result.get("transferable_skills", []) if llm_result else [],
+            experience_quality=llm_result.get("experience_quality") if llm_result else None,
+            experience_quality_reasoning=llm_result.get("experience_quality_reasoning") if llm_result else None,
+            risk_flags=llm_result.get("risk_flags", []) if llm_result else [],
+            strengths=llm_result.get("strengths", []) if llm_result else [],
+            llm_enabled=llm_result is not None,
+        )
+
+        # Yield the final result object (API layer wraps into result_event)
+        yield match_result
     
     async def compute_embedding(self, text: str) -> List[float]:
         """

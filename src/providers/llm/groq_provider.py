@@ -174,6 +174,9 @@ class GroqLLMProvider(BaseLLMProvider):
             "stream": True,
         }
 
+        if config.json_mode:
+            payload["response_format"] = {"type": "json_object"}
+
         if config.stop_sequences:
             payload["stop"] = config.stop_sequences
 
