@@ -4,8 +4,8 @@
 providers:
   llm:
     provider: "groq"  # Options: vllm, ollama, llamacpp, openai-compatible, groq
-    model: "llama-3.1-8b-instant"
-    max_context_length: 8192
+    model: "meta-llama/llama-4-scout-17b-16e-instruct"
+    max_context_length: 131072
     # Local Ollama config (uncomment to switch back):
     # provider: "ollama"
     # model: "qwen2.5:3b"  # RTX 4050 6GB VRAM
@@ -44,7 +44,7 @@ providers:
     # embedding-based quantitative scores. Set enabled: false to
     # use pure algorithmic matching only.
     provider: "groq"  # Options: vllm, ollama, openai-compatible, groq
-    model: "llama-3.1-8b-instant"
+    model: "meta-llama/llama-4-scout-17b-16e-instruct"
     enabled: true  # Master switch — false = pure embedding, true = hybrid
     max_tokens: 1024
     temperature: 0.1

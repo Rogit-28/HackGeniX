@@ -401,6 +401,93 @@ async def list_sessions(
     ]
 
 
+@router.get("/{session_id}/augmentation-log", response_model=dict)
+async def get_augmentation_log(
+    session_id: str,
+    user: AuthenticatedUser = Depends(require_session_access("session_id")),
+):
+    """
+    Get the question augmentation log for a session.
+
+    Shows which questions were augmented (original vs modified text),
+    which were follow-ups, and the candidate context profile that
+    drove augmentation decisions.  Intended for hiring managers /
+    admins to inspect how the adaptive pipeline shaped the interview.
+    """
+    orchestrator = get_interview_orchestrator()
+
+    session = await orchestrator.get_session(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session not found: {session_id}",
+        )
+
+    # Build answer lookup: question_id -> AnswerRecord
+    answer_map = {a.question_id: a for a in session.answers}
+
+    # Track base question numbering (exclude follow-ups)
+    base_number = 0
+    questions_out = []
+    augmented_count = 0
+
+    for q in session.questions:
+        is_follow_up = q.parent_question_id is not None
+        if not is_follow_up:
+            base_number += 1
+
+        was_augmented = q.source == "augmented"
+        if was_augmented:
+            augmented_count += 1
+
+        # Build sub-question label for follow-ups
+        sub_label = None
+        if is_follow_up and q.sub_question_number:
+            suffix = chr(ord("a") + q.sub_question_number - 1)
+            sub_label = f"Q{base_number}{suffix}"
+
+        # Match answer if question was answered
+        answer = answer_map.get(q.id)
+
+        questions_out.append({
+            "question_id": q.id,
+            "question_number": base_number,
+            "stage": q.stage if isinstance(q.stage, str) else q.stage.value,
+            "source": q.source,
+            "original_question_text": q.original_question_text,
+            "augmented_question_text": q.question_text,
+            "was_augmented": was_augmented,
+            "is_follow_up": is_follow_up,
+            "parent_question_id": q.parent_question_id,
+            "sub_question_label": sub_label,
+            "status": q.status if isinstance(q.status, str) else q.status.value,
+            "answer_text": answer.answer_text if answer else None,
+            "answer_score": answer.scores.get("overall", 0) if answer else None,
+        })
+
+    # Extract candidate context (strip qa_history to keep response slim)
+    ctx = session.candidate_context or {}
+    ctx_summary = {
+        "demonstrated_skills": ctx.get("demonstrated_skills", []),
+        "weak_areas": ctx.get("weak_areas", []),
+        "standout_points": ctx.get("standout_points", []),
+        "follow_up_hooks": ctx.get("follow_up_hooks", []),
+        "cross_stage_connections": ctx.get("cross_stage_connections", []),
+        "confidence_assessment": ctx.get("confidence_assessment", "unknown"),
+        "suggested_focus": ctx.get("suggested_focus", ""),
+    }
+
+    return {
+        "session_id": session.id,
+        "enable_question_augmentation": session.config.enable_question_augmentation,
+        "total_questions": len(session.questions),
+        "augmented_count": augmented_count,
+        "follow_up_count": session.follow_up_count,
+        "questions": questions_out,
+        "candidate_context": ctx_summary,
+    }
+
+
 @router.delete("/{session_id}")
 async def delete_session(
     session_id: str,

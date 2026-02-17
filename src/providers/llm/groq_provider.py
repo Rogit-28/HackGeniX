@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 # Groq-hosted models (non-exhaustive; new models added frequently)
 GROQ_MODELS = [
+    "meta-llama/llama-4-scout-17b-16e-instruct",
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
     "llama-3.1-70b-versatile",

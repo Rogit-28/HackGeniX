@@ -490,12 +490,12 @@ async def interview_websocket(
             await _send_json(ws, TimerExpiredMessage(
                 question_id=question_id,
             ))
-            await _process_answer()
+            await _process_answer(from_timer=True)
 
         except asyncio.CancelledError:
             pass  # Timer cancelled because user stopped recording
 
-    async def _process_answer():
+    async def _process_answer(from_timer: bool = False):
         """Transcribe audio (if any), evaluate, advance to next question."""
         nonlocal is_recording, current_q
 
@@ -522,7 +522,29 @@ async def interview_websocket(
             except Exception as exc:
                 logger.error(f"Transcription failed: {exc}")
                 await _send_error(ws, f"Transcription failed: {exc}")
-                # Re-open mic so user can try again or type
+                if from_timer:
+                    # Timer already expired — can't re-open listening,
+                    # auto-submit with fallback text so interview advances
+                    answer_text = "(No answer provided - timer expired)"
+                else:
+                    # Manual stop — re-open mic so user can try again or type
+                    is_recording = True
+                    audio_buffer.clear()
+                    await _send_json(ws, ListeningMessage(
+                        question_id=current_q.id,
+                        duration_seconds=current_q.duration_seconds,
+                        auto_submit_on_expire=True,
+                    ))
+                    return
+
+        if not answer_text.strip():
+            if from_timer:
+                # Timer expired with no speech — auto-skip with fallback text
+                # so the interview advances (will score low but won't get stuck)
+                answer_text = "(No answer provided - timer expired)"
+            else:
+                await _send_error(ws, "No speech detected. Please try again or type your answer.")
+                # Re-open listening
                 is_recording = True
                 audio_buffer.clear()
                 await _send_json(ws, ListeningMessage(
@@ -531,18 +553,6 @@ async def interview_websocket(
                     auto_submit_on_expire=True,
                 ))
                 return
-
-        if not answer_text.strip():
-            await _send_error(ws, "No speech detected. Please try again or type your answer.")
-            # Re-open listening
-            is_recording = True
-            audio_buffer.clear()
-            await _send_json(ws, ListeningMessage(
-                question_id=current_q.id,
-                duration_seconds=current_q.duration_seconds,
-                auto_submit_on_expire=True,
-            ))
-            return
 
         # Evaluate answer
         response = await _evaluate_and_advance(ws, session_id, answer_text)
