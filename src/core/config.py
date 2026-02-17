@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     debug: bool = True
     log_level: str = "INFO"
     
+    # CORS – comma-separated origins, or "*" for allow-all
+    cors_origins: str = "*"
+    
     # Server
     host: str = "0.0.0.0"
     port: int = 8000
