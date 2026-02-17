@@ -664,84 +664,154 @@ function SetupContent() {
                   />
                 </div>
                 {config.follow_ups?.enabled && (
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <Label>Max Per Question</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        max={5}
-                        value={config.follow_ups?.max_per_question ?? 2}
-                        onChange={(e) =>
-                          setConfig((prev) => ({
-                            ...prev,
-                            follow_ups: {
-                              ...prev.follow_ups,
-                              max_per_question: parseInt(e.target.value) || 2,
-                            },
-                          }))
-                        }
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label>Max After &quot;Don&apos;t Know&quot;</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        max={3}
-                        value={config.follow_ups?.max_after_dont_know ?? 1}
-                        onChange={(e) =>
-                          setConfig((prev) => ({
-                            ...prev,
-                            follow_ups: {
-                              ...prev.follow_ups,
-                              max_after_dont_know: parseInt(e.target.value) || 1,
-                            },
-                          }))
-                        }
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label>Poor Score Threshold</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        max={100}
-                        value={config.follow_ups?.trigger_rules?.poor_score_threshold ?? 40}
-                        onChange={(e) =>
-                          setConfig((prev) => ({
-                            ...prev,
-                            follow_ups: {
-                              ...prev.follow_ups,
-                              trigger_rules: {
-                                ...prev.follow_ups?.trigger_rules,
-                                poor_score_threshold: parseInt(e.target.value) || 40,
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <Label>Max Per Question</Label>
+                        <Input
+                          type="number"
+                          min={0}
+                          max={5}
+                          value={config.follow_ups?.max_per_question ?? 2}
+                          onChange={(e) =>
+                            setConfig((prev) => ({
+                              ...prev,
+                              follow_ups: {
+                                ...prev.follow_ups,
+                                max_per_question: parseInt(e.target.value) || 2,
                               },
-                            },
-                          }))
-                        }
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label>Standout Score Threshold</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        max={100}
-                        value={config.follow_ups?.trigger_rules?.standout_score_threshold ?? 70}
-                        onChange={(e) =>
-                          setConfig((prev) => ({
-                            ...prev,
-                            follow_ups: {
-                              ...prev.follow_ups,
-                              trigger_rules: {
-                                ...prev.follow_ups?.trigger_rules,
-                                standout_score_threshold: parseInt(e.target.value) || 70,
+                            }))
+                          }
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Max After &quot;Don&apos;t Know&quot;</Label>
+                        <Input
+                          type="number"
+                          min={0}
+                          max={3}
+                          value={config.follow_ups?.max_after_dont_know ?? 1}
+                          onChange={(e) =>
+                            setConfig((prev) => ({
+                              ...prev,
+                              follow_ups: {
+                                ...prev.follow_ups,
+                                max_after_dont_know: parseInt(e.target.value) || 1,
                               },
-                            },
-                          }))
-                        }
-                      />
+                            }))
+                          }
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Poor Score Threshold</Label>
+                        <Input
+                          type="number"
+                          min={0}
+                          max={100}
+                          value={config.follow_ups?.trigger_rules?.poor_score_threshold ?? 40}
+                          onChange={(e) =>
+                            setConfig((prev) => ({
+                              ...prev,
+                              follow_ups: {
+                                ...prev.follow_ups,
+                                trigger_rules: {
+                                  ...prev.follow_ups?.trigger_rules,
+                                  poor_score_threshold: parseInt(e.target.value) || 40,
+                                },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Standout Score Threshold</Label>
+                        <Input
+                          type="number"
+                          min={0}
+                          max={100}
+                          value={config.follow_ups?.trigger_rules?.standout_score_threshold ?? 70}
+                          onChange={(e) =>
+                            setConfig((prev) => ({
+                              ...prev,
+                              follow_ups: {
+                                ...prev.follow_ups,
+                                trigger_rules: {
+                                  ...prev.follow_ups?.trigger_rules,
+                                  standout_score_threshold: parseInt(e.target.value) || 70,
+                                },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+                    </div>
+
+                    <Separator />
+
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <Label>Require Depth Increase</Label>
+                          <p className="text-xs text-muted-foreground">
+                            Follow-ups must go deeper than the original question
+                          </p>
+                        </div>
+                        <Switch
+                          checked={config.follow_ups?.require_depth_increase ?? true}
+                          onCheckedChange={(checked) =>
+                            setConfig((prev) => ({
+                              ...prev,
+                              follow_ups: {
+                                ...prev.follow_ups,
+                                require_depth_increase: checked,
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <Label>Different Angle on Failure</Label>
+                          <p className="text-xs text-muted-foreground">
+                            Try a different approach when candidate struggles
+                          </p>
+                        </div>
+                        <Switch
+                          checked={config.follow_ups?.allow_different_angle_on_failure ?? true}
+                          onCheckedChange={(checked) =>
+                            setConfig((prev) => ({
+                              ...prev,
+                              follow_ups: {
+                                ...prev.follow_ups,
+                                allow_different_angle_on_failure: checked,
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <Label>Hooks Trigger Alone</Label>
+                          <p className="text-xs text-muted-foreground">
+                            Allow hooks to trigger follow-ups without score thresholds
+                          </p>
+                        </div>
+                        <Switch
+                          checked={config.follow_ups?.trigger_rules?.hooks_trigger_alone ?? false}
+                          onCheckedChange={(checked) =>
+                            setConfig((prev) => ({
+                              ...prev,
+                              follow_ups: {
+                                ...prev.follow_ups,
+                                trigger_rules: {
+                                  ...prev.follow_ups?.trigger_rules,
+                                  hooks_trigger_alone: checked,
+                                },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
                     </div>
                   </div>
                 )}

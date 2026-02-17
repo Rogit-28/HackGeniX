@@ -14,7 +14,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Separator } from '@/components/ui/separator';
-import { getSession, submitAnswer, endSession } from '@/lib/api';
+import { getSession, submitAnswer, endSession, pauseSession, resumeSession, synthesizeSpeech } from '@/lib/api';
 import type { SessionDetail, Question, Evaluation, SSEEvent } from '@/lib/types';
 import {
   Send,
@@ -25,7 +25,11 @@ import {
   CheckCircle2,
   AlertTriangle,
   Mic,
+  MicOff,
   ChevronRight,
+  Pause,
+  Play,
+  Volume2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -44,11 +48,27 @@ function InterviewContent() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [questionStartTime, setQuestionStartTime] = useState<number>(0);
 
+  // Pause / Resume
+  const [paused, setPaused] = useState(false);
+  const [pauseLoading, setPauseLoading] = useState(false);
+
+  // TTS playback
+  const [ttsPlaying, setTtsPlaying] = useState(false);
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Audio answer recording
+  const [answerMode, setAnswerMode] = useState<'text' | 'audio'>('text');
+  const [recording, setRecording] = useState(false);
+  const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
   // Load session
   const loadSession = useCallback(async () => {
     try {
       const data = await getSession(sessionId);
       setSession(data);
+      setPaused(data.status === 'paused');
 
       // Start timer for current question
       if (data.current_question?.duration_seconds) {
@@ -174,6 +194,139 @@ function InterviewContent() {
     }
   };
 
+  // Pause / Resume
+  const handlePauseResume = async () => {
+    setPauseLoading(true);
+    try {
+      if (paused) {
+        await resumeSession(sessionId);
+        setPaused(false);
+        toast.success('Interview resumed');
+      } else {
+        await pauseSession(sessionId);
+        setPaused(true);
+        toast.success('Interview paused');
+      }
+      await loadSession();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Pause/resume failed');
+    } finally {
+      setPauseLoading(false);
+    }
+  };
+
+  // TTS: read question aloud
+  const handleTTS = async () => {
+    if (!question?.text) return;
+    if (ttsPlaying && ttsAudioRef.current) {
+      ttsAudioRef.current.pause();
+      ttsAudioRef.current.currentTime = 0;
+      setTtsPlaying(false);
+      return;
+    }
+    setTtsPlaying(true);
+    try {
+      const blob = await synthesizeSpeech(question.text);
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      ttsAudioRef.current = audio;
+      audio.onended = () => {
+        setTtsPlaying(false);
+        URL.revokeObjectURL(url);
+      };
+      audio.onerror = () => {
+        setTtsPlaying(false);
+        URL.revokeObjectURL(url);
+        toast.error('Audio playback failed');
+      };
+      audio.play();
+    } catch (err) {
+      setTtsPlaying(false);
+      toast.error(err instanceof Error ? err.message : 'TTS failed');
+    }
+  };
+
+  // Audio recording: start
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+      audioChunksRef.current = [];
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        setAudioBlob(blob);
+        stream.getTracks().forEach((t) => t.stop());
+      };
+      mediaRecorderRef.current = mediaRecorder;
+      mediaRecorder.start(250);
+      setRecording(true);
+      setAudioBlob(null);
+    } catch (err) {
+      toast.error('Microphone access denied');
+    }
+  };
+
+  // Audio recording: stop
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    setRecording(false);
+  };
+
+  // Submit audio answer
+  const handleAudioSubmit = async () => {
+    if (!audioBlob) {
+      toast.error('No audio recorded');
+      return;
+    }
+    setSubmitting(true);
+    setEvalText('');
+    setLastEvaluation(null);
+
+    try {
+      // Convert blob to base64
+      const buffer = await audioBlob.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      const base64 = btoa(binary);
+
+      let newEval: Evaluation | null = null;
+      for await (const event of submitAnswer(sessionId, undefined, base64)) {
+        try {
+          const parsed = JSON.parse(event.data);
+          if (parsed.token || parsed.text || parsed.chunk) {
+            setEvalText((prev) => prev + (parsed.token || parsed.text || parsed.chunk || ''));
+          }
+          if (parsed.evaluation) {
+            newEval = parsed.evaluation;
+            setLastEvaluation(parsed.evaluation);
+          }
+          if (parsed.score !== undefined) {
+            newEval = parsed as unknown as Evaluation;
+            setLastEvaluation(parsed as unknown as Evaluation);
+          }
+        } catch {
+          setEvalText((prev) => prev + event.data);
+        }
+      }
+
+      setAudioBlob(null);
+      toast.success('Audio answer submitted');
+      await loadSession();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Submit failed');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex h-96 items-center justify-center">
@@ -228,7 +381,22 @@ function InterviewContent() {
             {sessionId.slice(0, 16)}...
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handlePauseResume}
+            disabled={pauseLoading}
+          >
+            {pauseLoading ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : paused ? (
+              <Play className="mr-2 h-4 w-4" />
+            ) : (
+              <Pause className="mr-2 h-4 w-4" />
+            )}
+            {paused ? 'Resume' : 'Pause'}
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -237,7 +405,7 @@ function InterviewContent() {
             <Mic className="mr-2 h-4 w-4" />
             Switch to Voice
           </Button>
-          <Badge variant={session.status === 'in_progress' ? 'default' : 'secondary'}>
+          <Badge variant={session.status === 'in_progress' ? 'default' : session.status === 'paused' ? 'outline' : 'secondary'}>
             {session.status.replace('_', ' ')}
           </Badge>
         </div>
@@ -276,21 +444,35 @@ function InterviewContent() {
       {question && (
         <Card>
           <CardHeader>
-            <div className="flex items-center gap-2">
-              <CardTitle className="text-lg">
-                {question.is_follow_up ? 'Follow-up Question' : 'Question'}
-              </CardTitle>
-              {question.is_follow_up && (
-                <Badge variant="secondary">Follow-up</Badge>
-              )}
-              {question.sub_question_label && (
-                <Badge variant="outline">{question.sub_question_label}</Badge>
-              )}
-              {question.difficulty && (
-                <Badge variant="outline" className="capitalize">
-                  {question.difficulty}
-                </Badge>
-              )}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <CardTitle className="text-lg">
+                  {question.is_follow_up ? 'Follow-up Question' : 'Question'}
+                </CardTitle>
+                {question.is_follow_up && (
+                  <Badge variant="secondary">Follow-up</Badge>
+                )}
+                {question.sub_question_label && (
+                  <Badge variant="outline">{question.sub_question_label}</Badge>
+                )}
+                {question.difficulty && (
+                  <Badge variant="outline" className="capitalize">
+                    {question.difficulty}
+                  </Badge>
+                )}
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleTTS}
+                title={ttsPlaying ? 'Stop playback' : 'Read question aloud'}
+              >
+                {ttsPlaying ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Volume2 className="h-4 w-4" />
+                )}
+              </Button>
             </div>
             <Badge variant="outline" className="w-fit capitalize">
               {question.type?.replace('_', ' ')}
@@ -307,40 +489,127 @@ function InterviewContent() {
       {/* Answer Input */}
       <Card>
         <CardContent className="py-4 space-y-3">
-          <Textarea
-            value={answer}
-            onChange={(e) => setAnswer(e.target.value)}
-            placeholder="Type your answer here..."
-            rows={6}
-            disabled={submitting}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                handleSubmit();
-              }
-            }}
-          />
+          {/* Mode Toggle */}
           <div className="flex gap-2">
             <Button
-              onClick={handleSubmit}
-              disabled={!answer.trim() || submitting}
-              className="flex-1"
+              variant={answerMode === 'text' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setAnswerMode('text')}
+              disabled={submitting}
             >
-              {submitting ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Send className="mr-2 h-4 w-4" />
-              )}
-              {submitting ? 'Evaluating...' : 'Submit Answer (Ctrl+Enter)'}
+              <Send className="mr-1.5 h-3.5 w-3.5" />
+              Text
             </Button>
-            <Button variant="outline" onClick={handleSkip} disabled={submitting}>
-              <SkipForward className="mr-2 h-4 w-4" />
-              Skip
-            </Button>
-            <Button variant="destructive" onClick={handleEnd} disabled={submitting}>
-              <Square className="mr-2 h-4 w-4" />
-              End
+            <Button
+              variant={answerMode === 'audio' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setAnswerMode('audio')}
+              disabled={submitting}
+            >
+              <Mic className="mr-1.5 h-3.5 w-3.5" />
+              Audio
             </Button>
           </div>
+
+          {answerMode === 'text' ? (
+            <>
+              <Textarea
+                value={answer}
+                onChange={(e) => setAnswer(e.target.value)}
+                placeholder="Type your answer here..."
+                rows={6}
+                disabled={submitting || paused}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                    handleSubmit();
+                  }
+                }}
+              />
+              <div className="flex gap-2">
+                <Button
+                  onClick={handleSubmit}
+                  disabled={!answer.trim() || submitting || paused}
+                  className="flex-1"
+                >
+                  {submitting ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Send className="mr-2 h-4 w-4" />
+                  )}
+                  {submitting ? 'Evaluating...' : 'Submit Answer (Ctrl+Enter)'}
+                </Button>
+                <Button variant="outline" onClick={handleSkip} disabled={submitting || paused}>
+                  <SkipForward className="mr-2 h-4 w-4" />
+                  Skip
+                </Button>
+                <Button variant="destructive" onClick={handleEnd} disabled={submitting}>
+                  <Square className="mr-2 h-4 w-4" />
+                  End
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex flex-col items-center gap-3 py-4">
+                {recording ? (
+                  <Button
+                    variant="destructive"
+                    size="lg"
+                    onClick={stopRecording}
+                    className="h-16 w-16 rounded-full"
+                  >
+                    <MicOff className="h-6 w-6" />
+                  </Button>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="lg"
+                    onClick={startRecording}
+                    disabled={submitting || paused}
+                    className="h-16 w-16 rounded-full"
+                  >
+                    <Mic className="h-6 w-6" />
+                  </Button>
+                )}
+                <p className="text-sm text-muted-foreground">
+                  {recording
+                    ? 'Recording... click to stop'
+                    : audioBlob
+                    ? 'Audio recorded. Submit or re-record.'
+                    : 'Click to start recording'}
+                </p>
+                {audioBlob && (
+                  <audio
+                    controls
+                    src={URL.createObjectURL(audioBlob)}
+                    className="w-full max-w-md"
+                  />
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  onClick={handleAudioSubmit}
+                  disabled={!audioBlob || submitting || paused}
+                  className="flex-1"
+                >
+                  {submitting ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Send className="mr-2 h-4 w-4" />
+                  )}
+                  {submitting ? 'Evaluating...' : 'Submit Audio Answer'}
+                </Button>
+                <Button variant="outline" onClick={handleSkip} disabled={submitting || paused}>
+                  <SkipForward className="mr-2 h-4 w-4" />
+                  Skip
+                </Button>
+                <Button variant="destructive" onClick={handleEnd} disabled={submitting}>
+                  <Square className="mr-2 h-4 w-4" />
+                  End
+                </Button>
+              </div>
+            </>
+          )}
         </CardContent>
       </Card>
 

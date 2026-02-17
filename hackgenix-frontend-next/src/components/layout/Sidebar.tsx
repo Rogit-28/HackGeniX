@@ -16,12 +16,14 @@ import {
   Settings,
   LogOut,
   Mic,
+  FolderOpen,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 
 const NAV_ITEMS = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard, permission: null },
+  { href: '/documents', label: 'Documents', icon: FolderOpen, permission: 'view_document' },
   { href: '/setup', label: 'New Interview', icon: PlayCircle, permission: 'create_session' },
   { href: '/sessions', label: 'Sessions', icon: List, permission: 'view_session' },
   { href: '/reports', label: 'Reports', icon: FileText, permission: 'view_reports' },

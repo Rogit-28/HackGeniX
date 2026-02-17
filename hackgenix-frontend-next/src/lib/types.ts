@@ -32,32 +32,161 @@ export const ROLE_PERMISSIONS: Record<Role, string[]> = {
   candidate: ['participate_session', 'use_voice'],
 };
 
+// --- Documents: Parsed Resume sub-types ---
+
+export interface ContactInfo {
+  name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  linkedin?: string | null;
+  github?: string | null;
+  location?: string | null;
+}
+
+export interface Experience {
+  company?: string | null;
+  title?: string | null;
+  location?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
+  description?: string | null;
+  highlights?: string[];
+  skills?: string[];
+  impact?: string[];
+}
+
+export interface Education {
+  institution?: string | null;
+  degree?: string | null;
+  field?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
+  gpa?: number | null;
+}
+
+export interface Project {
+  name?: string | null;
+  description?: string | null;
+  tech_stack?: string[];
+  highlights?: string[];
+  skills?: string[];
+  impact?: string[];
+  url?: string | null;
+}
+
+export interface Research {
+  title?: string | null;
+  venue?: string | null;
+  status?: string | null;
+  highlights?: string[];
+  skills?: string[];
+  impact?: string[];
+}
+
+export interface ParsedEntity {
+  text: string;
+  label: string;
+  start: number;
+  end: number;
+}
+
+export interface ParsedResume {
+  contact?: ContactInfo;
+  summary?: string | null;
+  skills?: string[];
+  experience?: Experience[];
+  education?: Education[];
+  certifications?: string[];
+  projects?: Project[];
+  research?: Research[];
+  soft_skills?: string[];
+  areas_of_interest?: string[];
+  extra_sections?: Record<string, unknown>;
+  languages?: string[];
+  entities?: ParsedEntity[];
+  raw_text?: string;
+}
+
+// --- Documents: Parsed JD sub-type ---
+
+export interface ParsedJobDescription {
+  title?: string | null;
+  company?: string | null;
+  location?: string | null;
+  employment_type?: string | null;
+  experience_level?: string | null;
+  experience_years_min?: number | null;
+  experience_years_max?: number | null;
+  salary_min?: number | null;
+  salary_max?: number | null;
+  salary_currency?: string | null;
+  required_skills?: string[];
+  preferred_skills?: string[];
+  responsibilities?: string[];
+  qualifications?: string[];
+  benefits?: string[];
+  raw_text?: string;
+}
+
 // --- Documents ---
+
 export interface Resume {
   id: string;
   filename: string;
   candidate_name?: string;
+  candidate_id?: string | null;
+  content_type?: string;
+  file_size?: number;
   skills?: string[];
   experience_years?: number;
   uploaded_at: string;
   status: string;
+  error_message?: string | null;
+  parsed_data?: ParsedResume | null;
 }
 
 export interface JobDescription {
   id: string;
   title: string;
-  company?: string;
+  company?: string | null;
+  filename?: string | null;
+  content_type?: string | null;
+  file_size?: number | null;
   required_skills?: string[];
   experience_required?: string;
   created_at: string;
   status: string;
+  error_message?: string | null;
+  raw_text?: string;
+  parsed_data?: ParsedJobDescription | null;
+}
+
+// --- Documents: Match Result ---
+
+export interface TransferableSkill {
+  skill_name: string;
+  description: string;
 }
 
 export interface MatchResult {
+  resume_id: string;
+  job_description_id: string;
   overall_score: number;
-  skill_match: number;
-  experience_match: number;
+  skill_match_score: number;
+  experience_match_score: number;
+  semantic_similarity_score: number;
+  matched_skills: string[];
+  missing_skills: string[];
   recommendations: string[];
+  // LLM-enhanced fields (populated when use_llm=true)
+  llm_fit_score?: number | null;
+  llm_reasoning?: string | null;
+  transferable_skills?: TransferableSkill[];
+  experience_quality?: string | null;
+  experience_quality_reasoning?: string | null;
+  risk_flags?: string[];
+  strengths?: string[];
+  llm_enabled?: boolean;
 }
 
 // --- Sessions ---

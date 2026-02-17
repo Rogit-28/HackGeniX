@@ -163,11 +163,11 @@ export async function listJobDescriptions(): Promise<JobDescription[]> {
   return data.job_descriptions ?? [];
 }
 
-export function createJDStream(text: string, title?: string) {
+export function createJDStream(text: string, title?: string, company?: string) {
   return streamSSE('/api/v1/documents/job-descriptions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, title }),
+    body: JSON.stringify({ text, title, company }),
   });
 }
 
@@ -180,14 +180,14 @@ export function uploadJDStream(file: File) {
   });
 }
 
-export function matchResumeToJD(resumeId: string, jdId: string) {
-  return streamSSE('/api/v1/documents/match', {
+export function matchResumeToJD(resumeId: string, jdId: string, useLlm = true) {
+  const params = new URLSearchParams({
+    resume_id: resumeId,
+    job_description_id: jdId,
+    use_llm: String(useLlm),
+  });
+  return streamSSE(`/api/v1/documents/match?${params.toString()}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      resume_id: resumeId,
-      job_description_id: jdId,
-    }),
   });
 }
 
@@ -223,11 +223,18 @@ export async function getSession(id: string): Promise<SessionDetail> {
   return handleResponse<SessionDetail>(res);
 }
 
-export function submitAnswer(sessionId: string, answerText: string) {
+export function submitAnswer(
+  sessionId: string,
+  answerText?: string,
+  answerAudioBase64?: string
+) {
+  const body: Record<string, string> = {};
+  if (answerText) body.answer_text = answerText;
+  if (answerAudioBase64) body.answer_audio_base64 = answerAudioBase64;
   return streamSSE(`/api/v1/sessions/${sessionId}/answer`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ answer_text: answerText }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -287,6 +294,37 @@ export async function downloadReportPDF(sessionId: string): Promise<Blob> {
     { headers: authHeaders() }
   );
   if (!res.ok) throw new Error(`PDF download failed: ${res.status}`);
+  return res.blob();
+}
+
+// --- Voice (REST) ---
+
+export async function synthesizeSpeech(
+  text: string,
+  voiceId?: string,
+  rate?: number
+): Promise<Blob> {
+  const body: Record<string, unknown> = { text };
+  if (voiceId) body.voice_id = voiceId;
+  if (rate != null) body.rate = rate;
+  const res = await fetch(`${BACKEND_URL}/api/v1/voice/synthesize`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const errBody = await res.text();
+      detail = errBody || detail;
+    } catch {
+      // ignore
+    }
+    throw new Error(`TTS failed ${res.status}: ${detail}`);
+  }
   return res.blob();
 }
 

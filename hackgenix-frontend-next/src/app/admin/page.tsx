@@ -31,6 +31,7 @@ import {
   Loader2,
   Server,
   Key,
+  Zap,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -45,6 +46,15 @@ function AdminContent() {
   const [tokenRole, setTokenRole] = useState<Role>('hiring_manager');
   const [generatedToken, setGeneratedToken] = useState('');
   const [generatingToken, setGeneratingToken] = useState(false);
+
+  // Connection test
+  const [connTesting, setConnTesting] = useState(false);
+  const [connResult, setConnResult] = useState<{
+    ok: boolean;
+    latencyMs: number;
+    status?: number;
+    error?: string;
+  } | null>(null);
 
   const loadHealth = async () => {
     setLoadingHealth(true);
@@ -65,6 +75,36 @@ function AdminContent() {
   useEffect(() => {
     loadHealth();
   }, []);
+
+  const handleTestConnection = async () => {
+    setConnTesting(true);
+    setConnResult(null);
+    const start = performance.now();
+    try {
+      const res = await fetch(`${getBackendURL()}/health`, {
+        method: 'GET',
+        cache: 'no-store',
+      });
+      const latencyMs = Math.round(performance.now() - start);
+      if (res.ok) {
+        setConnResult({ ok: true, latencyMs, status: res.status });
+        toast.success(`Connected (${latencyMs}ms)`);
+      } else {
+        setConnResult({ ok: false, latencyMs, status: res.status, error: res.statusText });
+        toast.error(`Connection returned ${res.status}`);
+      }
+    } catch (err) {
+      const latencyMs = Math.round(performance.now() - start);
+      setConnResult({
+        ok: false,
+        latencyMs,
+        error: err instanceof Error ? err.message : 'Network error',
+      });
+      toast.error('Connection failed');
+    } finally {
+      setConnTesting(false);
+    }
+  };
 
   const handleGenerateToken = async () => {
     setGeneratingToken(true);
@@ -120,6 +160,61 @@ function AdminContent() {
             <span className="text-sm">{user?.id} ({user?.role})</span>
           </div>
         </CardContent>
+      </Card>
+
+      {/* Connection Test */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Zap className="h-5 w-5 text-muted-foreground" />
+              <CardTitle>Connection Test</CardTitle>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleTestConnection}
+              disabled={connTesting}
+            >
+              {connTesting ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Zap className="mr-2 h-4 w-4" />
+              )}
+              Test Connection
+            </Button>
+          </div>
+          <CardDescription>
+            Ping the backend and measure round-trip latency
+          </CardDescription>
+        </CardHeader>
+        {connResult && (
+          <CardContent>
+            <div className="flex items-center justify-between rounded-lg border p-3">
+              <div className="flex items-center gap-2">
+                {connResult.ok ? (
+                  <CheckCircle2 className="h-4 w-4 text-success" />
+                ) : (
+                  <XCircle className="h-4 w-4 text-destructive" />
+                )}
+                <span className="text-sm font-medium">
+                  {connResult.ok ? 'Connected' : 'Failed'}
+                </span>
+                {connResult.status && (
+                  <Badge variant={connResult.ok ? 'default' : 'destructive'} className="text-xs">
+                    HTTP {connResult.status}
+                  </Badge>
+                )}
+              </div>
+              <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                <span>{connResult.latencyMs}ms</span>
+                {connResult.error && (
+                  <span className="text-destructive text-xs">{connResult.error}</span>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        )}
       </Card>
 
       {/* Health Check */}
