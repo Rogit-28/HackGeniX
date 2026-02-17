@@ -29,6 +29,16 @@ function authHeaders(): Record<string, string> {
   return headers;
 }
 
+/** Normalize MongoDB _id → id on a document object */
+function normalizeId<T>(doc: T): T & { id: string } {
+  const d = doc as Record<string, unknown>;
+  if ('_id' in d && !('id' in d)) {
+    d['id'] = d['_id'];
+    delete d['_id'];
+  }
+  return { ...d } as T & { id: string };
+}
+
 async function handleResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let detail = res.statusText;
@@ -122,14 +132,14 @@ export async function listResumes(): Promise<Resume[]> {
     headers: authHeaders(),
   });
   const data = await handleResponse<{ resumes: Resume[] }>(res);
-  return data.resumes ?? [];
+  return (data.resumes ?? []).map(normalizeId);
 }
 
 export async function getResume(id: string): Promise<Resume> {
   const res = await fetch(`${BACKEND_URL}/api/v1/documents/resumes/${id}`, {
     headers: authHeaders(),
   });
-  return handleResponse<Resume>(res);
+  return normalizeId(await handleResponse<Resume>(res));
 }
 
 export function uploadResumeStream(file: File) {
@@ -160,7 +170,7 @@ export async function listJobDescriptions(): Promise<JobDescription[]> {
     { headers: authHeaders() }
   );
   const data = await handleResponse<{ job_descriptions: JobDescription[] }>(res);
-  return data.job_descriptions ?? [];
+  return (data.job_descriptions ?? []).map(normalizeId);
 }
 
 export function createJDStream(text: string, title?: string, company?: string) {

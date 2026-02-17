@@ -6,14 +6,13 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Separator } from '@/components/ui/separator';
-import { Progress } from '@/components/ui/progress';
 import {
   Select,
   SelectContent,
@@ -22,18 +21,10 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from '@/components/ui/accordion';
-import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from '@/components/ui/dialog';
 import {
   listResumes,
@@ -63,8 +54,6 @@ import {
   Briefcase,
   RefreshCw,
   Loader2,
-  ChevronDown,
-  ChevronRight,
   User,
   Mail,
   Phone,
@@ -89,6 +78,7 @@ import {
   Zap,
   Shield,
   TrendingUp,
+  Eye,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -280,7 +270,7 @@ function ResumeViewer({ data }: { data: ParsedResume }) {
                   <ul className="mt-1.5 space-y-0.5">
                     {proj.highlights.map((h, j) => (
                       <li key={j} className="text-xs text-muted-foreground flex items-start gap-1">
-                        <span className="text-success">\u2022</span> {h}
+                        <span className="text-success">&bull;</span> {h}
                       </li>
                     ))}
                   </ul>
@@ -600,7 +590,7 @@ function MatchResultsViewer({ result }: { result: MatchResult }) {
             {result.transferable_skills.map((ts, i) => (
               <div key={i} className="text-sm">
                 <span className="font-medium">{ts.skill_name}</span>
-                <span className="text-muted-foreground"> \u2014 {ts.description}</span>
+                <span className="text-muted-foreground"> &mdash; {ts.description}</span>
               </div>
             ))}
           </div>
@@ -664,8 +654,6 @@ function DocumentsContent() {
   // --- State: Resumes ---
   const [resumes, setResumes] = useState<Resume[]>([]);
   const [resumesLoading, setResumesLoading] = useState(true);
-  const [expandedResume, setExpandedResume] = useState<string | null>(null);
-  const [resumeDetails, setResumeDetails] = useState<Record<string, Resume>>({});
   const [uploading, setUploading] = useState(false);
   const [uploadStream, setUploadStream] = useState('');
   const resumeFileRef = useRef<HTMLInputElement>(null);
@@ -673,7 +661,6 @@ function DocumentsContent() {
   // --- State: JDs ---
   const [jds, setJds] = useState<JobDescription[]>([]);
   const [jdsLoading, setJdsLoading] = useState(true);
-  const [expandedJD, setExpandedJD] = useState<string | null>(null);
   const [jdUploading, setJdUploading] = useState(false);
   const [jdUploadStream, setJdUploadStream] = useState('');
   const [jdMode, setJdMode] = useState<'upload' | 'paste'>('upload');
@@ -682,12 +669,20 @@ function DocumentsContent() {
   const [jdText, setJdText] = useState('');
   const jdFileRef = useRef<HTMLInputElement>(null);
 
+  // --- State: Inspect Dialog ---
+  const [inspectDialogOpen, setInspectDialogOpen] = useState(false);
+  const [inspectType, setInspectType] = useState<'resume' | 'jd' | null>(null);
+  const [inspectResumeData, setInspectResumeData] = useState<Resume | null>(null);
+  const [inspectJDData, setInspectJDData] = useState<JobDescription | null>(null);
+  const [inspectLoading, setInspectLoading] = useState(false);
+
   // --- State: Match ---
   const [matchResumeId, setMatchResumeId] = useState('');
   const [matchJdId, setMatchJdId] = useState('');
   const [matching, setMatching] = useState(false);
   const [matchResult, setMatchResult] = useState<MatchResult | null>(null);
   const [matchStream, setMatchStream] = useState('');
+  const [matchDialogOpen, setMatchDialogOpen] = useState(false);
 
   // --- Load Lists ---
   const loadResumes = useCallback(async () => {
@@ -719,21 +714,30 @@ function DocumentsContent() {
     loadJDs();
   }, [loadResumes, loadJDs]);
 
-  // --- Resume expand: fetch full details ---
-  const toggleResumeExpand = async (id: string) => {
-    if (expandedResume === id) {
-      setExpandedResume(null);
-      return;
+  // --- Inspect handlers ---
+  const handleInspectResume = async (id: string) => {
+    setInspectType('resume');
+    setInspectResumeData(null);
+    setInspectJDData(null);
+    setInspectDialogOpen(true);
+    setInspectLoading(true);
+    try {
+      const full = await getResume(id);
+      setInspectResumeData(full);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to load resume');
+      setInspectDialogOpen(false);
+    } finally {
+      setInspectLoading(false);
     }
-    setExpandedResume(id);
-    if (!resumeDetails[id]) {
-      try {
-        const full = await getResume(id);
-        setResumeDetails((prev) => ({ ...prev, [id]: full }));
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : 'Failed to load resume details');
-      }
-    }
+  };
+
+  const handleInspectJD = (jd: JobDescription) => {
+    setInspectType('jd');
+    setInspectResumeData(null);
+    setInspectJDData(jd);
+    setInspectDialogOpen(true);
+    setInspectLoading(false);
   };
 
   // --- Upload Resume ---
@@ -764,7 +768,6 @@ function DocumentsContent() {
       await deleteResume(id);
       toast.success('Resume deleted');
       setResumes((prev) => prev.filter((r) => r.id !== id));
-      if (expandedResume === id) setExpandedResume(null);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Delete failed');
     }
@@ -813,6 +816,7 @@ function DocumentsContent() {
     setMatchResult(null);
     setMatchStream('');
     try {
+      let finalResult: MatchResult | null = null;
       for await (const event of matchResumeToJD(matchResumeId, matchJdId)) {
         setMatchStream((prev) => prev + event.data + '\n');
         // Parse final result event
@@ -820,8 +824,10 @@ function DocumentsContent() {
           try {
             const parsed = JSON.parse(event.data);
             if (parsed.match_result) {
+              finalResult = parsed.match_result;
               setMatchResult(parsed.match_result);
             } else if (parsed.overall_score != null) {
+              finalResult = parsed;
               setMatchResult(parsed);
             }
           } catch {
@@ -833,6 +839,7 @@ function DocumentsContent() {
           try {
             const parsed = JSON.parse(event.data);
             if (parsed.match_result) {
+              finalResult = parsed.match_result;
               setMatchResult(parsed.match_result);
             }
           } catch {
@@ -840,8 +847,9 @@ function DocumentsContent() {
           }
         }
       }
-      if (!matchResult) {
-        // Try to extract from the full stream
+      if (finalResult) {
+        toast.success('Match complete — click "View Results" to see details');
+      } else {
         toast.success('Match complete');
       }
     } catch (err) {
@@ -851,274 +859,260 @@ function DocumentsContent() {
     }
   };
 
+  // --- Derived: latest 5 ---
+  const latestResumes = resumes.slice(0, 5);
+  const latestJDs = jds.slice(0, 5);
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Documents</h1>
-          <p className="text-muted-foreground">
-            Manage resumes, job descriptions, and run match analysis
+          <h1 className="text-2xl font-bold">Documents</h1>
+          <p className="text-sm text-muted-foreground">
+            Resumes, job descriptions, and match analysis
           </p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => { loadResumes(); loadJDs(); }} disabled={resumesLoading || jdsLoading}>
-            <RefreshCw className={`mr-2 h-4 w-4 ${(resumesLoading || jdsLoading) ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
-        </div>
+        <Button variant="outline" size="sm" onClick={() => { loadResumes(); loadJDs(); }} disabled={resumesLoading || jdsLoading}>
+          <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${(resumesLoading || jdsLoading) ? 'animate-spin' : ''}`} />
+          Refresh
+        </Button>
       </div>
 
       {/* Two-Column Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* ======== LEFT: RESUMES ======== */}
-        <div className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <FileText className="h-5 w-5" /> Resumes
-              </CardTitle>
-              <CardDescription>Upload and manage candidate resumes</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {/* Upload */}
-              <div className="flex gap-2">
-                <Input
-                  ref={resumeFileRef}
-                  type="file"
-                  accept=".pdf,.docx,.doc,.txt"
-                  disabled={uploading}
-                  className="flex-1"
-                />
-                <Button onClick={handleResumeUpload} disabled={uploading}>
-                  {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                </Button>
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <FileText className="h-4 w-4" /> Resumes
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {/* Upload */}
+            <div className="flex gap-2">
+              <Input
+                ref={resumeFileRef}
+                type="file"
+                accept=".pdf,.docx,.doc,.txt"
+                disabled={uploading}
+                className="flex-1 h-8 text-sm"
+              />
+              <Button size="sm" onClick={handleResumeUpload} disabled={uploading} className="h-8 px-3">
+                {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+              </Button>
+            </div>
+            {uploadStream && (
+              <pre className="text-xs bg-muted p-2 rounded-md max-h-24 overflow-auto whitespace-pre-wrap">{uploadStream}</pre>
+            )}
+
+            <Separator />
+
+            {/* List — latest 5, compact rows */}
+            {resumesLoading ? (
+              <div className="flex justify-center py-4">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
               </div>
-              {uploadStream && (
-                <pre className="text-xs bg-muted p-2 rounded-md max-h-32 overflow-auto whitespace-pre-wrap">{uploadStream}</pre>
-              )}
-
-              <Separator />
-
-              {/* List */}
-              {resumesLoading ? (
-                <div className="flex justify-center py-8">
-                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                </div>
-              ) : resumes.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">No resumes uploaded yet</p>
-              ) : (
-                <div className="space-y-2">
-                  {resumes.map((resume) => (
-                    <div key={resume.id} className="border rounded-lg">
-                      <div
-                        className="flex items-center justify-between p-3 cursor-pointer hover:bg-muted/50 transition-colors"
-                        onClick={() => toggleResumeExpand(resume.id)}
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          {expandedResume === resume.id ? (
-                            <ChevronDown className="h-4 w-4 shrink-0" />
-                          ) : (
-                            <ChevronRight className="h-4 w-4 shrink-0" />
-                          )}
-                          <div className="min-w-0">
-                            <p className="text-sm font-medium truncate">{resume.filename}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {resume.candidate_name || 'Unknown'} &middot;{' '}
-                              <Badge variant={resume.status === 'parsed' ? 'secondary' : 'outline'} className="text-[10px] px-1 py-0">
-                                {resume.status}
-                              </Badge>
-                            </p>
-                          </div>
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={(e) => handleDeleteResume(resume.id, e)}
-                          className="text-destructive hover:text-destructive shrink-0"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-
-                      {expandedResume === resume.id && (
-                        <div className="px-3 pb-3 border-t">
-                          {resumeDetails[resume.id]?.parsed_data ? (
-                            <div className="pt-3">
-                              <ResumeViewer data={resumeDetails[resume.id].parsed_data!} />
-                            </div>
-                          ) : resumeDetails[resume.id] ? (
-                            <p className="text-sm text-muted-foreground py-3">No parsed data available</p>
-                          ) : (
-                            <div className="flex justify-center py-4">
-                              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-                            </div>
-                          )}
-                        </div>
-                      )}
+            ) : resumes.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-3">No resumes uploaded yet</p>
+            ) : (
+              <div className="space-y-0 max-h-[200px] overflow-y-auto">
+                {latestResumes.map((resume) => (
+                  <div
+                    key={resume.id}
+                    className="flex items-center justify-between py-1.5 px-1 hover:bg-muted/50 rounded transition-colors group"
+                  >
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <FileText className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                      <span className="text-sm truncate">{resume.filename}</span>
+                      <span className="text-xs text-muted-foreground truncate hidden sm:inline">
+                        {resume.candidate_name || ''}
+                      </span>
+                      <Badge variant={resume.status === 'parsed' ? 'secondary' : 'outline'} className="text-[10px] px-1.5 py-0 shrink-0">
+                        {resume.status}
+                      </Badge>
                     </div>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                        onClick={() => handleInspectResume(resume.id)}
+                        title="View details"
+                      >
+                        <Eye className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-7 p-0 text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
+                        onClick={(e) => handleDeleteResume(resume.id, e)}
+                        title="Delete"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+                {resumes.length > 5 && (
+                  <p className="text-xs text-muted-foreground text-center pt-1">
+                    Showing 5 of {resumes.length} resumes
+                  </p>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         {/* ======== RIGHT: JOB DESCRIPTIONS ======== */}
-        <div className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Briefcase className="h-5 w-5" /> Job Descriptions
-              </CardTitle>
-              <CardDescription>Upload or create job descriptions</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {/* Mode Toggle */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Briefcase className="h-4 w-4" /> Job Descriptions
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {/* Mode Toggle */}
+            <div className="flex gap-1.5">
+              <Button
+                variant={jdMode === 'upload' ? 'default' : 'outline'}
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => setJdMode('upload')}
+              >
+                Upload File
+              </Button>
+              <Button
+                variant={jdMode === 'paste' ? 'default' : 'outline'}
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => setJdMode('paste')}
+              >
+                Paste Text
+              </Button>
+            </div>
+
+            {jdMode === 'upload' ? (
               <div className="flex gap-2">
-                <Button
-                  variant={jdMode === 'upload' ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={() => setJdMode('upload')}
-                >
-                  Upload File
-                </Button>
-                <Button
-                  variant={jdMode === 'paste' ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={() => setJdMode('paste')}
-                >
-                  Paste Text
+                <Input
+                  ref={jdFileRef}
+                  type="file"
+                  accept=".pdf,.docx,.doc,.txt"
+                  disabled={jdUploading}
+                  className="flex-1 h-8 text-sm"
+                />
+                <Button size="sm" onClick={handleJDUpload} disabled={jdUploading} className="h-8 px-3">
+                  {jdUploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
                 </Button>
               </div>
-
-              {jdMode === 'upload' ? (
-                <div className="flex gap-2">
-                  <Input
-                    ref={jdFileRef}
-                    type="file"
-                    accept=".pdf,.docx,.doc,.txt"
-                    disabled={jdUploading}
-                    className="flex-1"
-                  />
-                  <Button onClick={handleJDUpload} disabled={jdUploading}>
-                    {jdUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                  </Button>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <Label className="text-xs">Title</Label>
-                      <Input
-                        value={jdTitle}
-                        onChange={(e) => setJdTitle(e.target.value)}
-                        placeholder="Job title"
-                        disabled={jdUploading}
-                      />
-                    </div>
-                    <div>
-                      <Label className="text-xs">Company</Label>
-                      <Input
-                        value={jdCompany}
-                        onChange={(e) => setJdCompany(e.target.value)}
-                        placeholder="Company name"
-                        disabled={jdUploading}
-                      />
-                    </div>
-                  </div>
+            ) : (
+              <div className="space-y-2">
+                <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <Label className="text-xs">Description</Label>
-                    <Textarea
-                      value={jdText}
-                      onChange={(e) => setJdText(e.target.value)}
-                      placeholder="Paste job description text..."
-                      rows={6}
+                    <Label className="text-xs">Title</Label>
+                    <Input
+                      value={jdTitle}
+                      onChange={(e) => setJdTitle(e.target.value)}
+                      placeholder="Job title"
                       disabled={jdUploading}
+                      className="h-8 text-sm"
                     />
                   </div>
-                  <Button onClick={handleJDUpload} disabled={jdUploading} className="w-full">
-                    {jdUploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
-                    Create JD
-                  </Button>
+                  <div>
+                    <Label className="text-xs">Company</Label>
+                    <Input
+                      value={jdCompany}
+                      onChange={(e) => setJdCompany(e.target.value)}
+                      placeholder="Company name"
+                      disabled={jdUploading}
+                      className="h-8 text-sm"
+                    />
+                  </div>
                 </div>
-              )}
-
-              {jdUploadStream && (
-                <pre className="text-xs bg-muted p-2 rounded-md max-h-32 overflow-auto whitespace-pre-wrap">{jdUploadStream}</pre>
-              )}
-
-              <Separator />
-
-              {/* List */}
-              {jdsLoading ? (
-                <div className="flex justify-center py-8">
-                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                <div>
+                  <Label className="text-xs">Description</Label>
+                  <Textarea
+                    value={jdText}
+                    onChange={(e) => setJdText(e.target.value)}
+                    placeholder="Paste job description text..."
+                    rows={3}
+                    disabled={jdUploading}
+                  />
                 </div>
-              ) : jds.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">No job descriptions yet</p>
-              ) : (
-                <div className="space-y-2">
-                  {jds.map((jd) => (
-                    <div key={jd.id} className="border rounded-lg">
-                      <div
-                        className="flex items-center justify-between p-3 cursor-pointer hover:bg-muted/50 transition-colors"
-                        onClick={() => setExpandedJD(expandedJD === jd.id ? null : jd.id)}
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          {expandedJD === jd.id ? (
-                            <ChevronDown className="h-4 w-4 shrink-0" />
-                          ) : (
-                            <ChevronRight className="h-4 w-4 shrink-0" />
-                          )}
-                          <div className="min-w-0">
-                            <p className="text-sm font-medium truncate">{jd.title}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {jd.company || 'No company'} &middot;{' '}
-                              <Badge variant={jd.status === 'parsed' ? 'secondary' : 'outline'} className="text-[10px] px-1 py-0">
-                                {jd.status}
-                              </Badge>
-                            </p>
-                          </div>
-                        </div>
-                      </div>
+                <Button size="sm" onClick={handleJDUpload} disabled={jdUploading} className="w-full h-8">
+                  {jdUploading ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Upload className="mr-1.5 h-3.5 w-3.5" />}
+                  Create JD
+                </Button>
+              </div>
+            )}
 
-                      {expandedJD === jd.id && (
-                        <div className="px-3 pb-3 border-t">
-                          {jd.parsed_data ? (
-                            <div className="pt-3">
-                              <JDViewer data={jd.parsed_data} />
-                            </div>
-                          ) : (
-                            <p className="text-sm text-muted-foreground py-3">No parsed data available</p>
-                          )}
-                        </div>
-                      )}
+            {jdUploadStream && (
+              <pre className="text-xs bg-muted p-2 rounded-md max-h-24 overflow-auto whitespace-pre-wrap">{jdUploadStream}</pre>
+            )}
+
+            <Separator />
+
+            {/* List — latest 5, compact rows */}
+            {jdsLoading ? (
+              <div className="flex justify-center py-4">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              </div>
+            ) : jds.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-3">No job descriptions yet</p>
+            ) : (
+              <div className="space-y-0 max-h-[200px] overflow-y-auto">
+                {latestJDs.map((jd) => (
+                  <div
+                    key={jd.id}
+                    className="flex items-center justify-between py-1.5 px-1 hover:bg-muted/50 rounded transition-colors group"
+                  >
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <Briefcase className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                      <span className="text-sm truncate">{jd.title}</span>
+                      <span className="text-xs text-muted-foreground truncate hidden sm:inline">
+                        {jd.company || ''}
+                      </span>
+                      <Badge variant={jd.status === 'parsed' ? 'secondary' : 'outline'} className="text-[10px] px-1.5 py-0 shrink-0">
+                        {jd.status}
+                      </Badge>
                     </div>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                        onClick={() => handleInspectJD(jd)}
+                        title="View details"
+                      >
+                        <Eye className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+                {jds.length > 5 && (
+                  <p className="text-xs text-muted-foreground text-center pt-1">
+                    Showing 5 of {jds.length} JDs
+                  </p>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
 
       {/* ======== MATCH SECTION ======== */}
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5" /> Resume-JD Match Analysis
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Sparkles className="h-4 w-4" /> Resume-JD Match
           </CardTitle>
-          <CardDescription>
-            Compare a resume against a job description for fit analysis
-          </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
-            <div>
-              <Label className="text-sm">Resume</Label>
+        <CardContent>
+          <div className="flex flex-col sm:flex-row gap-3 items-end">
+            <div className="flex-1 w-full">
+              <Label className="text-xs">Resume</Label>
               <Select value={matchResumeId} onValueChange={setMatchResumeId}>
-                <SelectTrigger>
+                <SelectTrigger className="h-8 text-sm">
                   <SelectValue placeholder="Select resume" />
                 </SelectTrigger>
                 <SelectContent>
@@ -1130,10 +1124,10 @@ function DocumentsContent() {
                 </SelectContent>
               </Select>
             </div>
-            <div>
-              <Label className="text-sm">Job Description</Label>
+            <div className="flex-1 w-full">
+              <Label className="text-xs">Job Description</Label>
               <Select value={matchJdId} onValueChange={setMatchJdId}>
-                <SelectTrigger>
+                <SelectTrigger className="h-8 text-sm">
                   <SelectValue placeholder="Select JD" />
                 </SelectTrigger>
                 <SelectContent>
@@ -1145,25 +1139,68 @@ function DocumentsContent() {
                 </SelectContent>
               </Select>
             </div>
-            <Button onClick={handleMatch} disabled={matching || !matchResumeId || !matchJdId}>
-              {matching ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Sparkles className="mr-2 h-4 w-4" />
+            <div className="flex gap-2 shrink-0">
+              <Button size="sm" onClick={handleMatch} disabled={matching || !matchResumeId || !matchJdId} className="h-8">
+                {matching ? (
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                )}
+                Run Match
+              </Button>
+              {matchResult && (
+                <Button size="sm" variant="outline" onClick={() => setMatchDialogOpen(true)} className="h-8">
+                  <Eye className="mr-1.5 h-3.5 w-3.5" />
+                  View Results
+                </Button>
               )}
-              Run Match
-            </Button>
+            </div>
           </div>
 
-          {/* Stream Output */}
+          {/* Stream Output (while matching, before result) */}
           {matchStream && !matchResult && (
-            <pre className="text-xs bg-muted p-2 rounded-md max-h-32 overflow-auto whitespace-pre-wrap">{matchStream}</pre>
+            <pre className="text-xs bg-muted p-2 rounded-md max-h-24 overflow-auto whitespace-pre-wrap mt-3">{matchStream}</pre>
           )}
-
-          {/* Match Results */}
-          {matchResult && <MatchResultsViewer result={matchResult} />}
         </CardContent>
       </Card>
+
+      {/* ======== INSPECT DIALOG ======== */}
+      <Dialog open={inspectDialogOpen} onOpenChange={setInspectDialogOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              {inspectType === 'resume'
+                ? inspectResumeData?.candidate_name || inspectResumeData?.filename || 'Resume Details'
+                : inspectJDData?.title || 'Job Description Details'}
+            </DialogTitle>
+          </DialogHeader>
+          {inspectLoading ? (
+            <div className="flex justify-center py-8">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : inspectType === 'resume' && inspectResumeData?.parsed_data ? (
+            <ResumeViewer data={inspectResumeData.parsed_data} />
+          ) : inspectType === 'resume' && inspectResumeData ? (
+            <p className="text-sm text-muted-foreground py-4">No parsed data available for this resume.</p>
+          ) : inspectType === 'jd' && inspectJDData?.parsed_data ? (
+            <JDViewer data={inspectJDData.parsed_data} />
+          ) : inspectType === 'jd' && inspectJDData ? (
+            <p className="text-sm text-muted-foreground py-4">No parsed data available for this JD.</p>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      {/* ======== MATCH RESULTS DIALOG ======== */}
+      <Dialog open={matchDialogOpen} onOpenChange={setMatchDialogOpen}>
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Sparkles className="h-4 w-4" /> Match Results
+            </DialogTitle>
+          </DialogHeader>
+          {matchResult && <MatchResultsViewer result={matchResult} />}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
