@@ -128,3 +128,42 @@ def load_model_config(config_path: Optional[str] = None) -> Dict[str, Any]:
 def get_model_config() -> Dict[str, Any]:
     """Get cached model configuration."""
     return load_model_config()
+
+
+# ------------------------------------------------------------------
+# Interview pipeline configuration
+# ------------------------------------------------------------------
+
+# In-process cache (not lru_cache because we want dict, not frozen)
+_interview_config_cache: Optional[Dict[str, Any]] = None
+
+
+def load_interview_config(config_path: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Load interview pipeline configuration from YAML file.
+
+    Returns a nested dict mirroring config/interview.yaml.
+    The result is cached in-process so the file is read only once.
+    """
+    global _interview_config_cache
+    if _interview_config_cache is not None:
+        return _interview_config_cache
+
+    if config_path is None:
+        config_path = Path(__file__).parent.parent.parent / "config" / "interview.yaml"
+    else:
+        config_path = Path(config_path)
+
+    if not config_path.exists():
+        raise FileNotFoundError(f"Interview config not found: {config_path}")
+
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+
+    _interview_config_cache = config
+    return config
+
+
+def get_interview_config() -> Dict[str, Any]:
+    """Get cached interview pipeline configuration."""
+    return load_interview_config()

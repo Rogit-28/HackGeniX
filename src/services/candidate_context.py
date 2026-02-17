@@ -28,6 +28,43 @@ from src.services.prompts import CONTEXT_EXTRACTION_PROMPT
 logger = logging.getLogger(__name__)
 
 
+# ------------------------------------------------------------------
+# "I don't know" detection — simple pattern matching, no LLM call
+# ------------------------------------------------------------------
+
+_DONT_KNOW_PATTERNS = [
+    "i don't know",
+    "i dont know",
+    "i don't remember",
+    "i dont remember",
+    "i'm not sure",
+    "im not sure",
+    "no idea",
+    "not sure",
+    "i have no idea",
+    "i can't answer",
+    "i cannot answer",
+    "i can't answer this",
+    "i cannot answer this",
+]
+
+_DONT_KNOW_EXACT = {
+    "(question skipped by candidate)",
+    "(no answer provided - timer expired)",
+}
+
+
+def is_dont_know_answer(answer_text: str) -> bool:
+    """Return True if the candidate effectively said 'I don't know' or gave up."""
+    normalised = answer_text.strip().lower()
+    if normalised in _DONT_KNOW_EXACT:
+        return True
+    for pattern in _DONT_KNOW_PATTERNS:
+        if pattern in normalised:
+            return True
+    return False
+
+
 @dataclass
 class CandidateContext:
     """Structured profile of a candidate built incrementally during the interview."""
@@ -206,6 +243,14 @@ class CandidateContextBuilder:
         follow_ups_so_far: int,
         max_follow_ups: int,
         questions_remaining: int,
+        # --- new config-driven params ---
+        answer_text: str = "",
+        dont_know_follow_ups_so_far: int = 0,
+        max_after_dont_know: int = 1,
+        poor_score_threshold: float = 40,
+        poor_recommendations: list | None = None,
+        standout_score_threshold: float = 70,
+        hooks_trigger_alone: bool = False,
     ) -> bool:
         """
         Decide whether a follow-up sub-question is warranted.
@@ -217,6 +262,9 @@ class CandidateContextBuilder:
 
         Returns True if the orchestrator should attempt to generate a follow-up.
         """
+        if poor_recommendations is None:
+            poor_recommendations = ["weak", "insufficient", "concerning"]
+
         # Hard limits
         if follow_ups_so_far >= max_follow_ups:
             return False
@@ -224,12 +272,29 @@ class CandidateContextBuilder:
             # Preserve time for coverage
             return False
 
+        # "I don't know" / gave-up limit
+        if is_dont_know_answer(answer_text) and dont_know_follow_ups_so_far >= max_after_dont_know:
+            return False
+
         # Trigger conditions
         has_hooks = len(context.follow_up_hooks) > 0
-        poor_on_critical = latest_score < 40 and latest_recommendation in ("weak", "insufficient", "concerning")
-        has_standout = len(context.standout_points) > 0 and latest_score >= 70
+        poor_on_critical = (
+            latest_score < poor_score_threshold
+            and latest_recommendation in poor_recommendations
+        )
+        has_standout = (
+            len(context.standout_points) > 0
+            and latest_score >= standout_score_threshold
+        )
 
-        return has_hooks or poor_on_critical or has_standout
+        if hooks_trigger_alone:
+            return has_hooks or poor_on_critical or has_standout
+        else:
+            # Hooks only amplify — they can't trigger alone
+            if poor_on_critical or has_standout:
+                return True
+            # hooks present but only as amplifier → not enough on their own
+            return False
 
     # ------------------------------------------------------------------
     # Private helpers

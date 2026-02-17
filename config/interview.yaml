@@ -1,0 +1,67 @@
+# ============================================================================
+# Interview Pipeline Configuration
+# ============================================================================
+# Plug-and-play: change values here to adjust interview behavior globally.
+# Per-session overrides (via API request body) take precedence over these
+# defaults.  This file is read once at session creation time.
+# ============================================================================
+
+# ------------------------------------------------------------------
+# Question counts per stage
+# ------------------------------------------------------------------
+questions:
+  screening: 3
+  technical: 5
+  behavioral: 3
+  system_design: 1
+
+# ------------------------------------------------------------------
+# Time limits
+# ------------------------------------------------------------------
+time_limits:
+  max_duration_seconds: 3600         # 1 hour total interview
+  question_timeout_seconds: 300      # 5 minutes per question
+
+# ------------------------------------------------------------------
+# Question generation (question bank / hybrid mode)
+# ------------------------------------------------------------------
+question_generation:
+  use_question_bank: true
+  auto_detect_domains: true
+  bank_question_ratio: 0.7           # 70% from bank, 30% LLM-generated
+  allow_rephrasing: true             # LLM can rephrase bank questions
+  allow_personalization: true        # LLM can weave in resume context
+
+# ------------------------------------------------------------------
+# Adaptive behavior
+# ------------------------------------------------------------------
+adaptive:
+  adaptive_difficulty: true
+  enable_question_augmentation: true  # Augment next question based on prior answers
+
+# ------------------------------------------------------------------
+# Follow-up sub-questions
+# ------------------------------------------------------------------
+follow_ups:
+  enabled: true
+  max_per_question: 2                 # Max follow-ups per base question
+  max_after_dont_know: 1              # Max follow-ups when candidate says "I don't know" / skips
+  require_depth_increase: true        # Follow-ups must go deeper, not restate
+  allow_different_angle_on_failure: true  # After "I don't know", probe a different angle
+
+  # Rule-based gate thresholds (pre-LLM filter in should_follow_up)
+  trigger_rules:
+    poor_score_threshold: 40          # Score below this = "poor on critical"
+    poor_recommendations:             # Recommendation values that count as "poor"
+      - "weak"
+      - "insufficient"
+      - "concerning"
+    standout_score_threshold: 70      # Score above this with standout points = worth exploring
+    hooks_trigger_alone: false        # If false, follow_up_hooks only amplify other signals
+
+# ------------------------------------------------------------------
+# Voice settings defaults
+# ------------------------------------------------------------------
+voice:
+  tts_voice: null                     # null = use provider default
+  stt_model: "base"

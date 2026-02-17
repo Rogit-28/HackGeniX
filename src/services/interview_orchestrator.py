@@ -53,6 +53,7 @@ from src.services.candidate_context import (
     CandidateContext,
     CandidateContextBuilder,
     get_candidate_context_builder,
+    is_dont_know_answer,
 )
 from src.services.prompts import (
     InterviewStage as PromptStage,
@@ -1124,6 +1125,18 @@ class InterviewOrchestrator:
             )
             
             max_follow_ups = session.config.max_follow_ups_per_question
+
+            # Collect texts of previously asked follow-ups for this root
+            # and count how many had "don't know" answers
+            previous_follow_up_texts: list[str] = []
+            dont_know_follow_ups = 0
+            for q in session.questions:
+                if _is_descendant_of_root(q) and q.answer_text is not None:
+                    previous_follow_up_texts.append(q.question_text)
+                    if is_dont_know_answer(q.answer_text):
+                        dont_know_follow_ups += 1
+            
+            candidate_gave_up = is_dont_know_answer(answer_text)
             
             should_try_follow_up = self.context_builder.should_follow_up(
                 context=ctx,
@@ -1132,6 +1145,14 @@ class InterviewOrchestrator:
                 follow_ups_so_far=follow_ups_for_root,
                 max_follow_ups=max_follow_ups,
                 questions_remaining=questions_remaining,
+                # Config-driven params
+                answer_text=answer_text,
+                dont_know_follow_ups_so_far=dont_know_follow_ups,
+                max_after_dont_know=session.config.max_follow_ups_after_dont_know,
+                poor_score_threshold=session.config.poor_score_threshold,
+                poor_recommendations=session.config.poor_recommendations,
+                standout_score_threshold=session.config.standout_score_threshold,
+                hooks_trigger_alone=session.config.hooks_trigger_alone,
             )
             
             if should_try_follow_up:
@@ -1149,6 +1170,8 @@ class InterviewOrchestrator:
                     questions_remaining=questions_remaining,
                     follow_ups_so_far=follow_ups_for_root,
                     max_follow_ups=max_follow_ups,
+                    previous_follow_ups=previous_follow_up_texts,
+                    candidate_gave_up=candidate_gave_up,
                 )
                 
                 if should_fu and fu_text:

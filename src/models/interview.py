@@ -1,12 +1,15 @@
 """
 Pydantic models for interview sessions.
 """
+import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from enum import Enum
 from dataclasses import dataclass, field
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+logger = logging.getLogger(__name__)
 
 
 class InterviewStatus(str, Enum):
@@ -120,7 +123,11 @@ class StageProgress(BaseModel):
 
 
 class InterviewConfig(BaseModel):
-    """Configuration for an interview session."""
+    """Configuration for an interview session.
+    
+    Defaults are loaded from config/interview.yaml.  Per-session overrides
+    (passed via the API request body) take precedence.
+    """
     mode: InterviewMode = InterviewMode.TEXT
     
     # Question counts per stage
@@ -134,6 +141,17 @@ class InterviewConfig(BaseModel):
     enable_follow_ups: bool = True
     max_follow_ups_per_question: int = 2
     enable_question_augmentation: bool = True  # Phase 7: Augment questions based on candidate answers
+    
+    # Follow-up "don't know" / depth settings
+    max_follow_ups_after_dont_know: int = 1
+    require_follow_up_depth_increase: bool = True
+    allow_different_angle_on_failure: bool = True
+    hooks_trigger_alone: bool = False
+    
+    # Follow-up trigger rule thresholds
+    poor_score_threshold: float = 40
+    poor_recommendations: List[str] = Field(default_factory=lambda: ["weak", "insufficient", "concerning"])
+    standout_score_threshold: float = 70
     
     # Time limits (in seconds, 0 = no limit)
     max_duration_seconds: int = 3600  # 1 hour default
@@ -154,6 +172,91 @@ class InterviewConfig(BaseModel):
     bank_question_ratio: float = Field(default=0.7, ge=0.0, le=1.0)  # 70% from bank
     allow_rephrasing: bool = True                           # LLM can rephrase bank questions
     allow_personalization: bool = True                      # LLM can add resume context
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_yaml_defaults(cls, values: Any) -> Any:
+        """Load defaults from config/interview.yaml, then overlay per-session overrides."""
+        if not isinstance(values, dict):
+            return values
+
+        try:
+            from src.core.config import get_interview_config
+            cfg = get_interview_config()
+        except Exception:
+            # If config file is missing or malformed, fall back to field defaults
+            logger.debug("interview.yaml not loaded; using field defaults")
+            return values
+
+        # Build a flat mapping from the nested YAML structure to model fields.
+        yaml_defaults: Dict[str, Any] = {}
+
+        # questions.*
+        q = cfg.get("questions", {})
+        if "screening" in q:
+            yaml_defaults["screening_questions"] = q["screening"]
+        if "technical" in q:
+            yaml_defaults["technical_questions"] = q["technical"]
+        if "behavioral" in q:
+            yaml_defaults["behavioral_questions"] = q["behavioral"]
+        if "system_design" in q:
+            yaml_defaults["system_design_questions"] = q["system_design"]
+
+        # time_limits.*
+        tl = cfg.get("time_limits", {})
+        if "max_duration_seconds" in tl:
+            yaml_defaults["max_duration_seconds"] = tl["max_duration_seconds"]
+        if "question_timeout_seconds" in tl:
+            yaml_defaults["question_timeout_seconds"] = tl["question_timeout_seconds"]
+
+        # question_generation.*
+        qg = cfg.get("question_generation", {})
+        for key in ("use_question_bank", "auto_detect_domains", "bank_question_ratio",
+                     "allow_rephrasing", "allow_personalization"):
+            if key in qg:
+                yaml_defaults[key] = qg[key]
+
+        # adaptive.*
+        ad = cfg.get("adaptive", {})
+        if "adaptive_difficulty" in ad:
+            yaml_defaults["adaptive_difficulty"] = ad["adaptive_difficulty"]
+        if "enable_question_augmentation" in ad:
+            yaml_defaults["enable_question_augmentation"] = ad["enable_question_augmentation"]
+
+        # follow_ups.*
+        fu = cfg.get("follow_ups", {})
+        if "enabled" in fu:
+            yaml_defaults["enable_follow_ups"] = fu["enabled"]
+        if "max_per_question" in fu:
+            yaml_defaults["max_follow_ups_per_question"] = fu["max_per_question"]
+        if "max_after_dont_know" in fu:
+            yaml_defaults["max_follow_ups_after_dont_know"] = fu["max_after_dont_know"]
+        if "require_depth_increase" in fu:
+            yaml_defaults["require_follow_up_depth_increase"] = fu["require_depth_increase"]
+        if "allow_different_angle_on_failure" in fu:
+            yaml_defaults["allow_different_angle_on_failure"] = fu["allow_different_angle_on_failure"]
+
+        # follow_ups.trigger_rules.*
+        tr = fu.get("trigger_rules", {})
+        if "poor_score_threshold" in tr:
+            yaml_defaults["poor_score_threshold"] = tr["poor_score_threshold"]
+        if "poor_recommendations" in tr:
+            yaml_defaults["poor_recommendations"] = tr["poor_recommendations"]
+        if "standout_score_threshold" in tr:
+            yaml_defaults["standout_score_threshold"] = tr["standout_score_threshold"]
+        if "hooks_trigger_alone" in tr:
+            yaml_defaults["hooks_trigger_alone"] = tr["hooks_trigger_alone"]
+
+        # voice.*
+        v = cfg.get("voice", {})
+        if "tts_voice" in v:
+            yaml_defaults["tts_voice"] = v["tts_voice"]
+        if "stt_model" in v:
+            yaml_defaults["stt_model"] = v["stt_model"]
+
+        # Merge: yaml_defaults first, then per-session overrides on top
+        merged = {**yaml_defaults, **values}
+        return merged
     
     class Config:
         use_enum_values = True

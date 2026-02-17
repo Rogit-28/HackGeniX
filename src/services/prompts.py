@@ -1056,6 +1056,11 @@ GENERATE_FOLLOWUP_SUBQUESTION_PROMPT = """You are an expert interviewer deciding
 **Candidate Context Profile:**
 {candidate_context}
 
+**Previous Follow-ups Already Asked for This Question:**
+{previous_follow_ups}
+
+**Candidate Gave Up / Said "I Don't Know":** {candidate_gave_up}
+
 **Interview Constraints:**
 - Stage: {current_stage}
 - Questions remaining after this: {questions_remaining}
@@ -1073,6 +1078,13 @@ GENERATE_FOLLOWUP_SUBQUESTION_PROMPT = """You are an expert interviewer deciding
 - There are fewer than 3 questions remaining (preserve time for coverage)
 - A follow-up was already asked for this question and the candidate didn't improve
 - The topic will naturally be covered by an upcoming question
+- You have already asked follow-ups listed above — do NOT repeat or rephrase them
+
+**DEPTH RULES (mandatory):**
+- Your follow-up MUST go deeper than the parent question — never simpler, never sideways
+- Never rephrase the same question with different words
+- If the candidate gave up ("I don't know" / skipped / timer expired), probe a COMPLETELY DIFFERENT angle or sub-topic within the same domain — do NOT ask the same thing in a simpler way
+- If a previous follow-up already exists (see above), your new follow-up must explore a different facet entirely
 
 **Output JSON — return ONLY this structure, no markdown fences:**
 {{

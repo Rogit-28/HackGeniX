@@ -687,6 +687,8 @@ class QuestionGenerator:
         questions_remaining: int,
         follow_ups_so_far: int,
         max_follow_ups: int,
+        previous_follow_ups: list[str] | None = None,
+        candidate_gave_up: bool = False,
     ) -> tuple:
         """
         Generate a follow-up sub-question based on the candidate's answer.
@@ -707,12 +709,22 @@ class QuestionGenerator:
             questions_remaining: Base questions remaining.
             follow_ups_so_far: Follow-ups already asked for this parent.
             max_follow_ups: Max follow-ups per question.
+            previous_follow_ups: Texts of follow-ups already asked for this root question.
+            candidate_gave_up: True if the candidate said "I don't know" / skipped / timed out.
 
         Returns:
             Tuple of (should_follow_up: bool, question_text: str | None,
                        purpose: str | None, expected_points: list).
         """
         context_section = candidate_context.to_prompt_section()
+
+        # Format previous follow-ups for the prompt
+        if previous_follow_ups:
+            prev_fu_text = "\n".join(
+                f"  {i}. {q}" for i, q in enumerate(previous_follow_ups, 1)
+            )
+        else:
+            prev_fu_text = "  (none — this would be the first follow-up)"
 
         prompt = GENERATE_FOLLOWUP_SUBQUESTION_PROMPT.format(
             parent_question=parent_question_text,
@@ -723,6 +735,8 @@ class QuestionGenerator:
             eval_improvements="; ".join(eval_improvements) if eval_improvements else "None identified",
             eval_follow_up=eval_follow_up or "None suggested",
             candidate_context=context_section,
+            previous_follow_ups=prev_fu_text,
+            candidate_gave_up="Yes" if candidate_gave_up else "No",
             current_stage=current_stage,
             questions_remaining=questions_remaining,
             follow_ups_so_far=follow_ups_so_far,
