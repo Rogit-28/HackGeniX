@@ -426,32 +426,43 @@ async def get_augmentation_log(
     # Build answer lookup: question_id -> AnswerRecord
     answer_map = {a.question_id: a for a in session.answers}
 
-    # Track base question numbering (exclude follow-ups)
+    # First pass: assign base question numbers
     base_number = 0
+    base_number_map = {}  # question_id -> base_number (for base questions only)
+    for q in session.questions:
+        if q.parent_question_id is None:
+            base_number += 1
+            base_number_map[q.id] = base_number
+
+    # Second pass: build output
     questions_out = []
     augmented_count = 0
 
     for q in session.questions:
         is_follow_up = q.parent_question_id is not None
-        if not is_follow_up:
-            base_number += 1
+
+        # Determine the base question number for this question
+        if is_follow_up:
+            q_number = base_number_map.get(q.parent_question_id, 0)
+        else:
+            q_number = base_number_map.get(q.id, 0)
 
         was_augmented = q.source == "augmented"
         if was_augmented:
             augmented_count += 1
 
-        # Build sub-question label for follow-ups
+        # Build sub-question label for follow-ups (e.g. Q3a, Q3b)
         sub_label = None
         if is_follow_up and q.sub_question_number:
             suffix = chr(ord("a") + q.sub_question_number - 1)
-            sub_label = f"Q{base_number}{suffix}"
+            sub_label = f"Q{q_number}{suffix}"
 
         # Match answer if question was answered
         answer = answer_map.get(q.id)
 
         questions_out.append({
             "question_id": q.id,
-            "question_number": base_number,
+            "question_number": q_number,
             "stage": q.stage if isinstance(q.stage, str) else q.stage.value,
             "source": q.source,
             "original_question_text": q.original_question_text,

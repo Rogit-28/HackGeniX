@@ -1094,10 +1094,33 @@ class InterviewOrchestrator:
             session.candidate_context = ctx.to_dict()
             
             # Step 2: Check if follow-up is warranted
-            # Count follow-ups already asked for this specific parent question
-            follow_ups_for_parent = sum(
-                1 for q in session.questions
-                if q.parent_question_id == current_question.id
+            # Walk up the parent chain to find the root base question,
+            # then count ALL follow-ups in the entire chain.  This
+            # prevents recursive chaining where each follow-up spawns
+            # another follow-up indefinitely.
+            root_q = current_question
+            question_map = {q.id: q for q in session.questions}
+            while root_q.parent_question_id is not None:
+                parent = question_map.get(root_q.parent_question_id)
+                if parent is None:
+                    break
+                root_q = parent
+
+            # Count every follow-up descended from the root base question
+            # (any question whose parent chain traces back to root_q)
+            def _is_descendant_of_root(q) -> bool:
+                """Check if q is a descendant of root_q."""
+                cur = q
+                while cur.parent_question_id is not None:
+                    if cur.parent_question_id == root_q.id:
+                        return True
+                    cur = question_map.get(cur.parent_question_id)
+                    if cur is None:
+                        return False
+                return False
+
+            follow_ups_for_root = sum(
+                1 for q in session.questions if _is_descendant_of_root(q)
             )
             
             max_follow_ups = session.config.max_follow_ups_per_question
@@ -1106,7 +1129,7 @@ class InterviewOrchestrator:
                 context=ctx,
                 latest_score=latest_score,
                 latest_recommendation=latest_recommendation,
-                follow_ups_so_far=follow_ups_for_parent,
+                follow_ups_so_far=follow_ups_for_root,
                 max_follow_ups=max_follow_ups,
                 questions_remaining=questions_remaining,
             )
@@ -1124,12 +1147,15 @@ class InterviewOrchestrator:
                     candidate_context=ctx,
                     current_stage=current_stage,
                     questions_remaining=questions_remaining,
-                    follow_ups_so_far=follow_ups_for_parent,
+                    follow_ups_so_far=follow_ups_for_root,
                     max_follow_ups=max_follow_ups,
                 )
                 
                 if should_fu and fu_text:
                     # Create and insert follow-up question
+                    # Point parent_question_id to the ROOT base question
+                    # so all follow-ups in a chain are siblings, and
+                    # sub_question_number reflects position in the chain.
                     follow_up_iq = InterviewQuestion(
                         id=str(uuid.uuid4()),
                         question_text=fu_text,
@@ -1141,8 +1167,8 @@ class InterviewOrchestrator:
                         duration_seconds=current_question.duration_seconds,
                         status=QuestionStatus.PENDING,
                         source="follow_up",
-                        parent_question_id=current_question.id,
-                        sub_question_number=follow_ups_for_parent + 1,
+                        parent_question_id=root_q.id,
+                        sub_question_number=follow_ups_for_root + 1,
                     )
                     
                     # Insert right after the just-answered question
